@@ -9,4 +9,5 @@ public class PublisherSettings
     public string PrivateKeyPath { get; set; } = "publisher_private.key";
     public string PublicKeyPath { get; set; } = "publisher_public.key";
     public bool IsActive { get; set; } = true;
+    public bool AutoResetCorruptLocalDb { get; set; } = true;
 }

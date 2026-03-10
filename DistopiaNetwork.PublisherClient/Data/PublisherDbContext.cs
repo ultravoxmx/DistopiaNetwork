@@ -23,18 +23,11 @@ public class PublisherDbContext : DbContext
             e.ToTable("Episodes");
             e.HasKey(ep => ep.PodcastId);
 
-            // FileHash UNIQUE: non è possibile pubblicare due volte lo stesso file
-            e.HasIndex(ep => ep.FileHash)
-             .IsUnique()
-             .HasDatabaseName("UX_Episodes_FileHash");
-
-            // UploadStatus: per GetPendingAsync() e GetAllByStatusAsync()
-            e.HasIndex(ep => ep.UploadStatus)
-             .HasDatabaseName("IX_Episodes_UploadStatus");
-
-            // CreatedAt: per l'ordinamento cronologico nella lista episodi
-            e.HasIndex(ep => ep.CreatedAt)
-             .HasDatabaseName("IX_Episodes_CreatedAt");
+            // NOTA: niente HasDatabaseName() — in SQLite 9.x causa una migrazione
+            // "rebuild" che fallisce su database vuoto. EF gestisce i nomi automaticamente.
+            e.HasIndex(ep => ep.FileHash).IsUnique();
+            e.HasIndex(ep => ep.UploadStatus);
+            e.HasIndex(ep => ep.CreatedAt);
 
             e.Property(ep => ep.UploadStatus)
              .HasDefaultValue(UploadStatuses.Draft);

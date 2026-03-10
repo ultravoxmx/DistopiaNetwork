@@ -3,10 +3,12 @@ using DistopiaNetwork.PublisherClient.Data;
 using DistopiaNetwork.PublisherClient.Data.Repositories;
 using DistopiaNetwork.PublisherClient.Entities;
 using DistopiaNetwork.PublisherClient.Services;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 // ── Setup Host e Dependency Injection ────────────────────────────────────────
 var host = Host.CreateDefaultBuilder(args)

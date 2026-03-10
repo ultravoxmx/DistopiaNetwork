@@ -1,12 +1,12 @@
-using System;
+﻿using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
-namespace DistopiaNetwork.PublisherClient.Data.Migrations
+namespace DistopiaNetwork.PublisherClient.Migrations
 {
     /// <inheritdoc />
-    public partial class InitialCreate : Migration
+    public partial class CreateEpisodesTable : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -17,7 +17,7 @@ namespace DistopiaNetwork.PublisherClient.Data.Migrations
                 {
                     PodcastId = table.Column<string>(type: "TEXT", maxLength: 36, nullable: false),
                     Title = table.Column<string>(type: "TEXT", maxLength: 512, nullable: false),
-                    Description = table.Column<string>(type: "TEXT", maxLength: 4096, nullable: false, defaultValue: ""),
+                    Description = table.Column<string>(type: "TEXT", maxLength: 4096, nullable: false),
                     FileHash = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     LocalFilePath = table.Column<string>(type: "TEXT", maxLength: 2048, nullable: false),
                     FileSize = table.Column<long>(type: "INTEGER", nullable: false),
@@ -33,9 +33,13 @@ namespace DistopiaNetwork.PublisherClient.Data.Migrations
                     table.PrimaryKey("PK_Episodes", x => x.PodcastId);
                 });
 
-            // FileHash UNIQUE — impedisce la pubblicazione dello stesso file due volte
             migrationBuilder.CreateIndex(
-                name: "UX_Episodes_FileHash",
+                name: "IX_Episodes_CreatedAt",
+                table: "Episodes",
+                column: "CreatedAt");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Episodes_FileHash",
                 table: "Episodes",
                 column: "FileHash",
                 unique: true);
@@ -44,17 +48,13 @@ namespace DistopiaNetwork.PublisherClient.Data.Migrations
                 name: "IX_Episodes_UploadStatus",
                 table: "Episodes",
                 column: "UploadStatus");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_Episodes_CreatedAt",
-                table: "Episodes",
-                column: "CreatedAt");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(name: "Episodes");
+            migrationBuilder.DropTable(
+                name: "Episodes");
         }
     }
 }
