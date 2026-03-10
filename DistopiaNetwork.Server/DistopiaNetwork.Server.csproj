@@ -13,6 +13,11 @@
 
   <ItemGroup>
     <!-- AddHttpClient() extension method -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="9.*">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.0" />
     <!-- Swagger / OpenAPI UI -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />

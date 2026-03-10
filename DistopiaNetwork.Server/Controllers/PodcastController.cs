@@ -1,15 +1,10 @@
 using DistopiaNetwork.Server.Services;
-using DistopiaNetwork.Shared.Crypto;
 using DistopiaNetwork.Shared.Dto;
 using DistopiaNetwork.Shared.Models;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DistopiaNetwork.Server.Controllers;
 
-/// <summary>
-/// Public API for podcast catalog browsing and streaming.
-/// Route prefix [Route("")] keeps paths flat (no /api/ prefix).
-/// </summary>
 [ApiController]
 [Route("")]
 public class PodcastController : ControllerBase
@@ -25,130 +20,115 @@ public class PodcastController : ControllerBase
         StreamingService streaming,
         ILogger<PodcastController> logger)
     {
-        _catalog = catalog;
-        _cache = cache;
+        _catalog  = catalog;
+        _cache    = cache;
         _streaming = streaming;
-        _logger = logger;
+        _logger   = logger;
     }
 
-    // ─── Catalog ────────────────────────────────────────────────────────────────
-
-    /// <summary>List all podcasts in the catalog.</summary>
+    // ── GET /podcasts ─────────────────────────────────────────────────────────
+    /// <summary>Ritorna tutti i podcast nel catalogo.</summary>
     [HttpGet("podcasts")]
-    public IActionResult GetAll()
-        => Ok(_catalog.GetAll());
-
-    // IMPORTANT: /podcasts/since/{timestamp} MUST be declared BEFORE /podcasts/{id}
-    // otherwise ASP.NET Core matches "since" as the {id} parameter and either
-    // crashes or returns wrong data, causing "response ended prematurely" on the client.
-    /// <summary>
-    /// Sync endpoint: returns all podcasts with publish_timestamp > timestamp.
-    /// Used by peer servers and the web UI for incremental refresh.
-    /// </summary>
-    [HttpGet("podcasts/since/{timestamp:long}")]
-    public IActionResult GetSince(long timestamp)
-        => Ok(new SyncResponse { Podcasts = _catalog.GetSince(timestamp).ToList() });
-
-    /// <summary>Get a single podcast by ID.</summary>
-    [HttpGet("podcasts/{id}")]
-    public IActionResult GetById(string id)
+    public async Task<IActionResult> GetAll()
     {
-        var podcast = _catalog.Get(id);
-        return podcast is null ? NotFound() : Ok(podcast);
+        var podcasts = await _catalog.GetAllAsync();
+        return Ok(podcasts);
     }
 
-    // ─── Publisher ───────────────────────────────────────────────────────────────
+    // ── GET /podcasts/since/{timestamp} ───────────────────────────────────────
+    /// <summary>Sincronizzazione incrementale: podcast pubblicati dopo il timestamp.</summary>
+    [HttpGet("podcasts/since/{timestamp:long}")]
+    public async Task<IActionResult> GetSince(long timestamp)
+    {
+        var podcasts = await _catalog.GetSinceAsync(timestamp);
+        return Ok(new SyncResponse { Podcasts = podcasts.ToList() });
+    }
 
+    // ── GET /podcasts/{id} ────────────────────────────────────────────────────
+    /// <summary>Ritorna un singolo podcast per ID.</summary>
+    [HttpGet("podcasts/{id}")]
+    public async Task<IActionResult> GetById(string id)
+    {
+        var podcast = await _catalog.GetAsync(id);
+        if (podcast is null)
+            return NotFound($"Podcast '{id}' not found.");
+        return Ok(podcast);
+    }
+
+    // ── POST /podcast/publish ─────────────────────────────────────────────────
     /// <summary>
-    /// Step 1 of publication: receive and validate signed metadata.
-    /// Returns 409 Conflict if the same file_hash is already registered.
-    /// Returns 400 Bad Request if the digital signature is invalid.
-    /// Returns 200 OK with { success, uploadUrl } on success.
+    /// Step 1 della pubblicazione: riceve i metadati firmati dal publisher client.
+    /// Verifica la firma RSA e rileva duplicati prima di accettare.
     /// </summary>
     [HttpPost("podcast/publish")]
-    public IActionResult Publish([FromBody] PodcastMetadata metadata)
+    public async Task<IActionResult> Publish([FromBody] PodcastMetadata metadata)
     {
-        if (metadata is null)
-            return BadRequest(new PublishResponse { Success = false, Error = "Missing metadata body." });
-
-        // Early duplicate check — returns 409 before touching the catalog
-        var existing = _catalog.FindByFileHash(metadata.FileHash);
+        // Controllo duplicato anticipato — risponde 409 Conflict con titolo esistente
+        var existing = await _catalog.FindByFileHashAsync(metadata.FileHash);
         if (existing is not null && existing.PodcastId != metadata.PodcastId)
         {
-            _logger.LogWarning(
-                "Duplicate publish attempt: file_hash {Hash} already registered as {ExistingId}.",
-                metadata.FileHash, existing.PodcastId);
-
             return Conflict(new PublishResponse
             {
                 Success = false,
-                Error = $"Duplicate: this MP3 is already published as episode '{existing.Title}' (ID: {existing.PodcastId})."
+                Error = $"Duplicate: already published as '{existing.Title}'"
             });
         }
 
-        if (!_catalog.TryAddOrUpdate(metadata))
-            return BadRequest(new PublishResponse { Success = false, Error = "Invalid signature." });
-
-        _logger.LogInformation("Podcast metadata accepted: {Id} — {Title}", metadata.PodcastId, metadata.Title);
+        var ok = await _catalog.TryAddOrUpdateAsync(metadata);
+        if (!ok)
+        {
+            return BadRequest(new PublishResponse
+            {
+                Success = false,
+                Error = "Invalid signature or duplicate content."
+            });
+        }
 
         return Ok(new PublishResponse
         {
-            Success  = true,
+            Success   = true,
             UploadUrl = $"/podcast/{metadata.PodcastId}/upload"
         });
     }
 
+    // ── POST /podcast/{id}/upload ─────────────────────────────────────────────
     /// <summary>
-    /// Step 2 of publication: receive the raw MP3 bytes from the publisher client.
-    /// Skips storage (returns 200) if the file hash is already in cache.
-    /// Returns 400 if the received bytes do not match the hash in metadata.
+    /// Step 2 della pubblicazione: riceve il file MP3 e lo verifica via SHA-256.
     /// </summary>
     [HttpPost("podcast/{id}/upload")]
-    [RequestSizeLimit(500_000_000)] // 500 MB max
-    public async Task<IActionResult> UploadMp3(string id)
+    [RequestSizeLimit(500_000_000)] // 500 MB
+    public async Task<IActionResult> UploadMp3(string id, CancellationToken ct)
     {
-        var metadata = _catalog.Get(id);
+        var metadata = await _catalog.GetAsync(id);
         if (metadata is null)
-            return NotFound("Podcast metadata not found. Publish metadata first.");
+            return NotFound($"Podcast '{id}' not found in catalog. Publish metadata first.");
 
-        // Read the entire body FIRST — before any early returns.
-        // Attempting to drain with CopyToAsync(Stream.Null) before returning
-        // causes "response ended prematurely" in HttpClient on the sender side.
+        // File già in cache? Drain del body per TCP corretto, poi rispondi 200
+        if (await _cache.HasAsync(metadata.FileHash))
+        {
+            await Request.Body.CopyToAsync(System.IO.Stream.Null, ct);
+            return Ok("Already exists in cache. Upload skipped.");
+        }
+
         using var ms = new MemoryStream();
-        await Request.Body.CopyToAsync(ms);
+        await Request.Body.CopyToAsync(ms, ct);
         var data = ms.ToArray();
 
-        if (data.Length == 0)
-            return BadRequest("Empty file body received.");
-
-        // If the file is already cached, discard the bytes we just read and return early.
-        if (_cache.Has(metadata.FileHash))
+        if (!DistopiaNetwork.Shared.Crypto.CryptoHelper.VerifyFileHash(data, metadata.FileHash))
         {
-            _logger.LogInformation(
-                "Upload skipped for podcast {Id}: file_hash {Hash} already in cache.",
-                id, metadata.FileHash);
-            return Ok("Already exists. Upload skipped.");
+            _logger.LogWarning("Hash mismatch on upload for podcast {Id}", id);
+            return BadRequest("File hash mismatch. The uploaded file does not match the declared SHA-256.");
         }
 
-        if (!CryptoHelper.VerifyFileHash(data, metadata.FileHash))
-        {
-            _logger.LogError(
-                "Hash mismatch for podcast {Id}. Expected {Expected}, got {Got}.",
-                id, metadata.FileHash, CryptoHelper.ComputeFileHash(data));
-            return BadRequest("File hash mismatch. The uploaded bytes do not match the hash in metadata.");
-        }
+        await _cache.StoreBytesAsync(metadata.FileHash, data, id);
+        _logger.LogInformation("MP3 stored for podcast {Id}", id);
 
-        await _cache.StoreBytesAsync(metadata.FileHash, data);
-        _logger.LogInformation("MP3 stored for podcast {Id} ({Size:N0} bytes).", id, data.Length);
         return Ok("Upload successful.");
     }
 
-    // ─── Streaming ───────────────────────────────────────────────────────────────
-
+    // ── GET /podcast/{id}/stream ──────────────────────────────────────────────
     /// <summary>
-    /// Browser streaming endpoint.
-    /// Cascade: local cache → publisher server → 404.
-    /// Supports HTTP Range requests for seeking in audio players.
+    /// Streaming audio al browser. Supporta Range requests per seek e resume.
     /// </summary>
     [HttpGet("podcast/{id}/stream")]
     public async Task<IActionResult> Stream(string id, CancellationToken ct)
@@ -156,49 +136,42 @@ public class PodcastController : ControllerBase
         var (stream, contentType, _) = await _streaming.ResolveStreamAsync(id, ct);
 
         if (stream is null)
-            return NotFound("Audio file not available.");
+            return NotFound("Audio file not available. Try again later.");
 
+        // Accept-Ranges: bytes abilita seek nativo nell'audio player HTML5
         Response.Headers.Append("Accept-Ranges", "bytes");
+
         return File(stream, contentType ?? "audio/mpeg", enableRangeProcessing: true);
     }
 
-    // ─── Internal (server-to-server) ────────────────────────────────────────────
-
+    // ── GET /internal/file/{fileHash} ─────────────────────────────────────────
     /// <summary>
-    /// Called by peer servers to fetch a cached MP3 by its SHA-256 hash.
-    /// If not locally cached, triggers the full resolution cascade.
+    /// Endpoint server-to-server: serve un MP3 per hash SHA-256.
+    /// Non destinato ai browser — usato da StreamingService quando la cache è fredda.
     /// </summary>
     [HttpGet("internal/file/{fileHash}")]
-    public async Task<IActionResult> GetFile(string fileHash, CancellationToken ct)
+    public async Task<IActionResult> GetFileByHash(string fileHash, CancellationToken ct)
     {
-        if (_cache.Has(fileHash))
-        {
-            _logger.LogInformation("Serving cached {Hash} to peer server.", fileHash);
-            var fs = _cache.OpenRead(fileHash);
-            return File(fs!, "audio/mpeg");
-        }
+        var (stream, contentType, _) = await _streaming.ResolveStreamByHashAsync(fileHash, ct);
 
-        var podcast = _catalog.GetAll().FirstOrDefault(p => p.FileHash == fileHash);
-        if (podcast is null)
-            return NotFound("File not found in catalog.");
-
-        var (stream, contentType, _) = await _streaming.ResolveStreamAsync(podcast.PodcastId, ct);
         if (stream is null)
-            return NotFound("Could not retrieve file from publisher.");
+            return NotFound($"File '{fileHash}' not available.");
 
-        return File(stream, contentType ?? "audio/mpeg");
+        return File(stream, contentType ?? "audio/mpeg", enableRangeProcessing: true);
     }
 
-    // ─── Status ──────────────────────────────────────────────────────────────────
-
+    // ── GET /status ───────────────────────────────────────────────────────────
+    /// <summary>Info sul nodo: catalogo, cache, server ID.</summary>
     [HttpGet("status")]
-    public IActionResult Status(
-        [FromServices] Microsoft.Extensions.Options.IOptions<Configuration.ServerSettings> opts)
-        => Ok(new
+    public async Task<IActionResult> Status(
+        [FromServices] Microsoft.Extensions.Options.IOptions<Configuration.ServerSettings> settings)
+    {
+        return Ok(new
         {
-            ServerId    = opts.Value.ServerId,
-            CatalogSize = _catalog.Count,
-            CachedFiles = _cache.Entries.Count,
-            Timestamp   = DateTimeOffset.UtcNow
+            serverId     = settings.Value.ServerId,
+            catalogSize  = _catalog.Count(),
+            cachedFiles  = await _cache.CountActiveAsync(),
+            timestamp    = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         });
+    }
 }

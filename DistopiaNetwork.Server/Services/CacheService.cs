@@ -1,136 +1,185 @@
-using System.Collections.Concurrent;
 using DistopiaNetwork.Server.Configuration;
+using DistopiaNetwork.Server.Data.UnitOfWork;
+using DistopiaNetwork.Server.Entities;
 using DistopiaNetwork.Shared.Models;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace DistopiaNetwork.Server.Services;
 
 /// <summary>
-/// Gestisce la cache temporanea degli MP3 su disco.
-/// Ogni accesso resetta il timer di scadenza (1-7 giorni).
+/// Gestisce la cache temporanea degli MP3 su filesystem + DB.
+///
+/// Due livelli di stato sincronizzati:
+///   - Filesystem: file fisici in CacheDirectory (es. ./mp3cache/abc123.mp3)
+///   - SQL Server:  tabella CacheEntries con hash, path, TTL, last access
+///
+/// Strategia di eviction:
+///   - Lazy: Has() rimuove entry scadute al momento dell'accesso
+///   - Eager: CacheCleanupService chiama CleanExpiredAsync() ogni ora
 /// </summary>
 public class CacheService
 {
-    private readonly ConcurrentDictionary<string, CacheEntry> _entries = new();
+    private readonly IUnitOfWork _uow;
     private readonly string _cacheDir;
     private readonly ILogger<CacheService> _logger;
 
-    public CacheService(IOptions<ServerSettings> opts, ILogger<CacheService> logger)
+    public static readonly TimeSpan MinTtl = TimeSpan.FromDays(1);
+    public static readonly TimeSpan MaxTtl = TimeSpan.FromDays(7);
+
+    public CacheService(IUnitOfWork uow, IOptions<ServerSettings> settings, ILogger<CacheService> logger)
     {
-        _cacheDir = opts.Value.CacheDirectory;
+        _uow = uow;
+        _cacheDir = settings.Value.CacheDirectory;
         _logger = logger;
+
         Directory.CreateDirectory(_cacheDir);
     }
 
     /// <summary>
-    /// Controlla se un file è in cache e non è scaduto.
-    /// Applica lazy eviction: se scaduto lo rimuove subito.
+    /// Verifica se un file è in cache e non scaduto.
+    /// Implementa lazy eviction: rimuove l'entry dal DB se scaduta o se il file fisico manca.
     /// </summary>
-    public bool Has(string fileHash)
+    public async Task<bool> HasAsync(string fileHash)
     {
-        if (!_entries.TryGetValue(fileHash, out var entry)) return false;
-        if (entry.IsExpired)
+        var entry = await _uow.CacheEntries.GetByHashAsync(fileHash);
+        if (entry is null) return false;
+
+        // Lazy eviction: entry scaduta
+        if (entry.ExpiryTimestamp < DateTime.UtcNow)
         {
-            Remove(fileHash);
+            await RemoveAsync(entry);
             return false;
         }
-        // Difesa contro cancellazioni manuali del file su disco
-        return File.Exists(entry.FilePath);
+
+        // Difesa contro cancellazioni manuali del filesystem
+        if (!File.Exists(entry.FilePath))
+        {
+            _logger.LogWarning("Cache entry {Hash} exists in DB but file is missing: {Path}", fileHash, entry.FilePath);
+            _uow.CacheEntries.Remove(entry);
+            await _uow.SaveChangesAsync();
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
-    /// Copia lo stream direttamente su disco senza buffering in RAM.
-    /// Usato per upload da publisher (evita doppio buffering memoria).
+    /// Apre un FileStream in lettura e resetta il TTL dell'entry.
+    /// Ritorna null se il file non è in cache.
     /// </summary>
-    public async Task<CacheEntry> StoreAsync(
-        string fileHash, Stream inputStream, CancellationToken ct = default)
+    public async Task<FileStream?> OpenReadAsync(string fileHash)
+    {
+        var entry = await _uow.CacheEntries.GetByHashAsync(fileHash);
+        if (entry is null || !File.Exists(entry.FilePath)) return null;
+
+        // Reset TTL: un file letto rimane in cache per altri MaxTtl giorni
+        entry.LastAccess = DateTime.UtcNow;
+        entry.ExpiryTimestamp = DateTime.UtcNow + MaxTtl;
+        _uow.CacheEntries.Update(entry);
+        await _uow.SaveChangesAsync();
+
+        return new FileStream(entry.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+    }
+
+    /// <summary>
+    /// Salva un MP3 da Stream su disco e registra l'entry nel DB.
+    /// Il nome del file è sempre {fileHash}.mp3 — univoco per definizione.
+    /// </summary>
+    public async Task<CacheEntryEntity> StoreAsync(string fileHash, Stream mp3Stream, string? podcastId = null)
     {
         var filePath = Path.Combine(_cacheDir, $"{fileHash}.mp3");
 
-        await using (var fs = new FileStream(
-            filePath,
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 81920,          // 80 KB buffer — ottimale per I/O su disco
-            useAsync: true))
+        await using var fs = File.Create(filePath);
+        await mp3Stream.CopyToAsync(fs);
+
+        return await RegisterEntryAsync(fileHash, filePath, podcastId);
+    }
+
+    /// <summary>
+    /// Salva un MP3 da array di byte su disco e registra l'entry nel DB.
+    /// </summary>
+    public async Task<CacheEntryEntity> StoreBytesAsync(string fileHash, byte[] data, string? podcastId = null)
+    {
+        var filePath = Path.Combine(_cacheDir, $"{fileHash}.mp3");
+        await File.WriteAllBytesAsync(filePath, data);
+
+        return await RegisterEntryAsync(fileHash, filePath, podcastId);
+    }
+
+    /// <summary>
+    /// Ritorna il percorso fisico di un file in cache, null se non presente.
+    /// </summary>
+    public async Task<string?> GetFilePathAsync(string fileHash)
+    {
+        var entry = await _uow.CacheEntries.GetByHashAsync(fileHash);
+        return entry is not null && File.Exists(entry.FilePath) ? entry.FilePath : null;
+    }
+
+    /// <summary>
+    /// Rimuove tutti i file scaduti dal filesystem e dal DB.
+    /// Chiamato da CacheCleanupService ogni ora.
+    /// </summary>
+    public async Task<int> CleanExpiredAsync(CancellationToken ct = default)
+    {
+        var expired = (await _uow.CacheEntries.GetExpiredAsync()).ToList();
+
+        foreach (var entry in expired)
+            await RemoveAsync(entry);
+
+        await _uow.SaveChangesAsync(ct);
+
+        _logger.LogInformation("Cache cleanup: removed {Count} expired entries.", expired.Count);
+        return expired.Count;
+    }
+
+    /// <summary>
+    /// Numero di file attivi in cache (non scaduti).
+    /// </summary>
+    public async Task<int> CountActiveAsync()
+        => await _uow.CacheEntries.CountActiveAsync();
+
+    // ── Helpers privati ───────────────────────────────────────────────────────
+
+    private async Task<CacheEntryEntity> RegisterEntryAsync(string fileHash, string filePath, string? podcastId)
+    {
+        // Se esiste già (upload ripetuto), aggiorna invece di inserire
+        var existing = await _uow.CacheEntries.GetByHashAsync(fileHash);
+        if (existing is not null)
         {
-            await inputStream.CopyToAsync(fs, ct);
+            existing.FilePath = filePath;
+            existing.LastAccess = DateTime.UtcNow;
+            existing.ExpiryTimestamp = DateTime.UtcNow + MaxTtl;
+            existing.PodcastId = podcastId ?? existing.PodcastId;
+            _uow.CacheEntries.Update(existing);
+            await _uow.SaveChangesAsync();
+            return existing;
         }
 
-        var entry = new CacheEntry { FileHash = fileHash, FilePath = filePath };
-        entry.ResetExpiry();
-        _entries[fileHash] = entry;
+        var entry = new CacheEntryEntity
+        {
+            FileHash        = fileHash,
+            FilePath        = filePath,
+            LastAccess      = DateTime.UtcNow,
+            ExpiryTimestamp = DateTime.UtcNow + MaxTtl,
+            PodcastId       = podcastId,
+        };
 
-        var fileInfo = new FileInfo(filePath);
-        _logger.LogInformation(
-            "Cached: {Hash} → {Path} ({Size:N0} bytes)", fileHash, filePath, fileInfo.Length);
+        await _uow.CacheEntries.AddAsync(entry);
+        await _uow.SaveChangesAsync();
         return entry;
     }
 
-    /// <summary>
-    /// Salva byte array in cache (usato da StreamingService per file ricevuti da peer).
-    /// </summary>
-    public async Task<CacheEntry> StoreBytesAsync(
-        string fileHash, byte[] data, CancellationToken ct = default)
+    private async Task RemoveAsync(CacheEntryEntity entry)
     {
-        using var ms = new MemoryStream(data, writable: false);
-        return await StoreAsync(fileHash, ms, ct);
-    }
-
-    /// <summary>
-    /// Apre il file in lettura e resetta il TTL.
-    /// Ritorna null se il file non è in cache o è scaduto.
-    /// </summary>
-    public FileStream? OpenRead(string fileHash)
-    {
-        if (!_entries.TryGetValue(fileHash, out var entry) || entry.IsExpired)
-            return null;
-        entry.ResetExpiry();
-        return new FileStream(
-            entry.FilePath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,     // più client possono leggere simultaneamente
-            bufferSize: 81920,
-            useAsync: true);
-    }
-
-    /// <summary>Legge tutti i byte di un file cachato.</summary>
-    public byte[]? ReadBytes(string fileHash)
-    {
-        if (!Has(fileHash)) return null;
-        var entry = _entries[fileHash];
-        entry.ResetExpiry();
-        return File.ReadAllBytes(entry.FilePath);
-    }
-
-    /// <summary>Rimuove un file dalla cache (scaduto o eliminato esplicitamente).</summary>
-    public void Remove(string fileHash)
-    {
-        if (_entries.TryRemove(fileHash, out var entry))
+        if (File.Exists(entry.FilePath))
         {
-            try { File.Delete(entry.FilePath); } catch { /* best effort */ }
-            _logger.LogInformation("Cache evicted: {Hash}", fileHash);
+            try { File.Delete(entry.FilePath); }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "Could not delete cached file {Path}", entry.FilePath);
+            }
         }
+        _uow.CacheEntries.Remove(entry);
     }
-
-    /// <summary>Cleanup periodico: rimuove tutti i file scaduti.</summary>
-    public void CleanExpired()
-    {
-        // Materializza prima di modificare il dizionario — thread-safe
-        var expired = _entries.Values
-            .Where(e => e.IsExpired)
-            .Select(e => e.FileHash)
-            .ToList();
-
-        foreach (var hash in expired)
-            Remove(hash);
-
-        if (expired.Count > 0)
-            _logger.LogInformation(
-                "Cache cleanup: removed {Count} expired entries.", expired.Count);
-    }
-
-    public IReadOnlyDictionary<string, CacheEntry> Entries => _entries;
 }

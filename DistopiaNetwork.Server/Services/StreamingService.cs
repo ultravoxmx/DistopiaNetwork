@@ -1,16 +1,21 @@
+using System.Net.Http;
 using DistopiaNetwork.Server.Configuration;
 using DistopiaNetwork.Shared.Crypto;
-using DistopiaNetwork.Shared.Models;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Text.Json;
 
 namespace DistopiaNetwork.Server.Services;
 
 /// <summary>
-/// Orchestrates the full streaming workflow (Sections 8–10 of the spec):
-/// 1. Check local cache → serve immediately
-/// 2. Cache miss → fetch from publisher server
-/// 3. Publisher server also missing → fetch from publisher client
+/// Orchestratore del flusso di streaming a cascata.
+/// Dato un podcast_id (o un fileHash diretto), restituisce uno Stream dell'MP3
+/// seguendo questa catena di fallback:
+///
+///   1. Cache locale → stream immediato, reset TTL
+///   2. Publisher server (peer) → fetch remoto, cache locale, stream
+///   3. (Se il peer non ha il file → il peer lo chiederà al publisher client)
+///
+/// Ritorna (null, null, null) se il file non è recuperabile.
 /// </summary>
 public class StreamingService
 {
@@ -24,102 +29,132 @@ public class StreamingService
         CatalogService catalog,
         CacheService cache,
         IHttpClientFactory httpFactory,
-        IOptions<ServerSettings> opts,
+        IOptions<ServerSettings> settings,
         ILogger<StreamingService> logger)
     {
-        _catalog = catalog;
-        _cache = cache;
+        _catalog    = catalog;
+        _cache      = cache;
         _httpFactory = httpFactory;
-        _settings = opts.Value;
-        _logger = logger;
+        _settings   = settings.Value;
+        _logger     = logger;
     }
 
     /// <summary>
-    /// Resolve and return a Stream for the requested podcast's MP3.
-    /// Returns null if the file cannot be obtained.
+    /// Risolve lo stream dato un podcast_id.
+    /// Ritorna (Stream, contentType, length) oppure (null, null, null).
     /// </summary>
-    public async Task<(Stream? Stream, string? ContentType, long? Length)> ResolveStreamAsync(
-        string podcastId, CancellationToken ct = default)
+    public async Task<(Stream? stream, string? contentType, long? length)> ResolveStreamAsync(
+        string podcastId, CancellationToken ct)
     {
-        var metadata = _catalog.Get(podcastId);
+        var metadata = await _catalog.GetAsync(podcastId);
         if (metadata is null)
         {
-            _logger.LogWarning("Stream request for unknown podcast: {Id}", podcastId);
+            _logger.LogWarning("Podcast {Id} not found in catalog.", podcastId);
             return (null, null, null);
         }
 
-        // Step 2 – Local cache hit
-        if (_cache.Has(metadata.FileHash))
+        return await ResolveStreamByHashAsync(metadata.FileHash, ct, metadata.PublisherServer);
+    }
+
+    /// <summary>
+    /// Risolve lo stream dato direttamente un fileHash SHA-256.
+    /// Usato dall'endpoint /internal/file/{fileHash} per le richieste server-to-server.
+    /// </summary>
+    public async Task<(Stream? stream, string? contentType, long? length)> ResolveStreamByHashAsync(
+        string fileHash, CancellationToken ct, string? publisherServerId = null)
+    {
+        // ── CASO 1: file in cache locale ──────────────────────────────────────
+        if (await _cache.HasAsync(fileHash))
         {
-            _logger.LogInformation("Cache HIT for {Hash}. Streaming locally.", metadata.FileHash);
-            var fs = _cache.OpenRead(metadata.FileHash);
-            return (fs, "audio/mpeg", fs?.Length);
+            var fs = await _cache.OpenReadAsync(fileHash);
+            if (fs is not null)
+            {
+                _logger.LogDebug("Cache hit for {Hash}", fileHash);
+                return (fs, "audio/mpeg", fs.Length);
+            }
         }
 
-        _logger.LogInformation("Cache MISS for {Hash}. Fetching from publisher server: {Server}",
-            metadata.FileHash, metadata.PublisherServer);
+        // ── CASO 2: file mancante → chiedi al publisher server ────────────────
+        _logger.LogInformation("Cache miss for {Hash}. Fetching from publisher server.", fileHash);
 
-        // Step 3 – Request from publisher server
-        var data = await FetchFromPublisherServerAsync(metadata, ct);
-        if (data is null) return (null, null, null);
-
-        // Verify integrity
-        if (!CryptoHelper.VerifyFileHash(data, metadata.FileHash))
+        var data = await FetchFromPublisherServerAsync(fileHash, publisherServerId, ct);
+        if (data is null)
         {
-            _logger.LogError("File hash mismatch for {Hash}!", metadata.FileHash);
+            _logger.LogWarning("Could not retrieve {Hash} from any peer.", fileHash);
             return (null, null, null);
         }
 
-        await _cache.StoreBytesAsync(metadata.FileHash, data);
+        // Verifica integrità prima di cachare (difesa contro corruzione di rete)
+        if (!CryptoHelper.VerifyFileHash(data, fileHash))
+        {
+            _logger.LogError("Hash mismatch for {Hash} received from peer. Discarding.", fileHash);
+            return (null, null, null);
+        }
+
+        await _cache.StoreBytesAsync(fileHash, data);
+        _logger.LogInformation("Cached {Hash} ({Bytes} bytes).", fileHash, data.Length);
+
         return (new MemoryStream(data), "audio/mpeg", data.Length);
     }
 
+    // ── Helpers privati ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Esegue GET /internal/file/{fileHash} sul publisher server.
+    /// Se publisherServerId è null, prova tutti i peer configurati.
+    /// </summary>
     private async Task<byte[]?> FetchFromPublisherServerAsync(
-        PodcastMetadata metadata, CancellationToken ct)
+        string fileHash, string? publisherServerId, CancellationToken ct)
     {
-        // Find peer URL that matches publisher_server id
-        var publisherUrl = FindPeerUrl(metadata.PublisherServer);
-        if (publisherUrl is null)
+        // Determina quali peer interrogare
+        var peers = publisherServerId is not null
+            ? GetPeerUrls(publisherServerId)   // prima il publisher server, poi gli altri
+            : _settings.PeerServers.ToList();
+
+        foreach (var peerUrl in peers)
         {
-            _logger.LogWarning("No peer URL found for publisher server: {Server}", metadata.PublisherServer);
-            return null;
-        }
-
-        try
-        {
-            var http = _httpFactory.CreateClient();
-            var requestBody = JsonSerializer.Serialize(new
+            try
             {
-                file_hash = metadata.FileHash,
-                requesting_server_id = _settings.ServerId
-            });
+                var http = _httpFactory.CreateClient();
+                var url  = $"{peerUrl}/internal/file/{fileHash}";
 
-            var content = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/json");
-            var url = $"{publisherUrl.TrimEnd('/')}/internal/file/{metadata.FileHash}";
+                _logger.LogDebug("Requesting {Hash} from {Url}", fileHash, url);
 
-            _logger.LogDebug("Requesting file from peer: {Url}", url);
-            var response = await http.GetAsync(url, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("Peer {Url} returned {Status}", url, response.StatusCode);
-                return null;
+                var response = await http.GetAsync(url, HttpCompletionOption.ResponseContentRead, ct);
+
+                if (response.IsSuccessStatusCode)
+                    return await response.Content.ReadAsByteArrayAsync(ct);
+
+                _logger.LogDebug("Peer {Url} returned {Status} for {Hash}", url, response.StatusCode, fileHash);
             }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to fetch {Hash} from peer {Peer}", fileHash, peerUrl);
+            }
+        }
 
-            return await response.Content.ReadAsByteArrayAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching from publisher server {Server}", metadata.PublisherServer);
-            return null;
-        }
+        return null;
     }
 
-    private string? FindPeerUrl(string serverId)
+    /// <summary>
+    /// Ritorna la lista di peer URL da interrogare, mettendo per primo il publisher server.
+    /// Usa convenzione: l'URL del peer contiene il suo server ID come sottostringa.
+    /// </summary>
+    private List<string> GetPeerUrls(string publisherServerId)
     {
-        // Convention: peer URL contains the server ID, or use first match
-        // In production, a registry/DNS would resolve this
-        return _settings.PeerServers.FirstOrDefault(p =>
-            p.Contains(serverId, StringComparison.OrdinalIgnoreCase))
-            ?? _settings.PeerServers.FirstOrDefault();
+        var peers = _settings.PeerServers.ToList();
+
+        // Trova il publisher server nella lista dei peer
+        var publisherUrl = peers.FirstOrDefault(p =>
+            p.Contains(publisherServerId, StringComparison.OrdinalIgnoreCase));
+
+        if (publisherUrl is not null)
+        {
+            // Metti il publisher server per primo per ridurre latenza
+            peers.Remove(publisherUrl);
+            peers.Insert(0, publisherUrl);
+        }
+
+        return peers;
     }
 }

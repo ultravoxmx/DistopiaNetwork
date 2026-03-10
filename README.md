@@ -1,112 +1,101 @@
-# Distopia Network — Distributed Podcast Protocol
+# Distopia Network — Data Access Layer
 
-A fully decentralized podcast network implemented in C# .NET 9.
+## File inclusi in questo archivio
 
-## Architecture
+Questi file si aggiungono (o sostituiscono) al progetto esistente.
+Copiare rispettando la struttura di cartelle.
 
-```
-Browser 1/2          Browser 3/4/N
-    ↕                     ↕
- Server A   ←──sync──→  Server B
-    ↕    ╲             ╱    ↕
-    ↕      ╲         ╱      ↕
- Client1  Client1-BCK  Client2  Client3
- [MP3s]                [MP3]    [MP3s]
-```
+---
 
-## Projects
+## DistopiaNetwork.Server — File da aggiungere/sostituire
 
-| Project | Type | Description |
-|---------|------|-------------|
-| `DistopiaNetwork.Shared` | Class Library | Models, Crypto, DTOs shared by all |
-| `DistopiaNetwork.Server` | ASP.NET Core Web API | Peer server node |
-| `DistopiaNetwork.PublisherClient` | Console App | Podcast creator tool |
-| `DistopiaNetwork.BrowserClient` | Console App | Listener/streaming client |
+| File | Azione |
+|------|--------|
+| `Entities/PodcastEntity.cs` | NUOVO |
+| `Entities/CacheEntryEntity.cs` | NUOVO |
+| `Data/AppDbContext.cs` | NUOVO |
+| `Data/Repositories/IRepository.cs` | NUOVO |
+| `Data/Repositories/IPodcastRepository.cs` | NUOVO |
+| `Data/Repositories/PodcastRepository.cs` | NUOVO |
+| `Data/Repositories/ICacheEntryRepository.cs` | NUOVO |
+| `Data/Repositories/CacheEntryRepository.cs` | NUOVO |
+| `Data/UnitOfWork/IUnitOfWork.cs` | NUOVO |
+| `Data/UnitOfWork/UnitOfWork.cs` | NUOVO |
+| `Data/Migrations/20260310000001_InitialCreate.cs` | NUOVO |
+| `Data/Migrations/AppDbContextModelSnapshot.cs` | NUOVO |
+| `Services/CatalogService.cs` | SOSTITUISCE quello esistente |
+| `Services/CacheService.cs` | SOSTITUISCE quello esistente |
+| `Services/SyncService.cs` | SOSTITUISCE quello esistente |
+| `Services/CacheCleanupService.cs` | SOSTITUISCE quello esistente |
+| `Program.cs` | SOSTITUISCE quello esistente |
+| `appsettings.json` | AGGIORNA la connection string |
 
-## Key Features
+## DistopiaNetwork.PublisherClient — File da aggiungere/sostituire
 
-- ✅ **RSA-2048 digital signatures** on all metadata
-- ✅ **SHA-256 file integrity** verification
-- ✅ **Automatic metadata synchronization** between peer servers
-- ✅ **Tiered MP3 caching** with 1–7 day TTL
-- ✅ **Full streaming cascade**: local cache → peer server → publisher client
-- ✅ **Publisher backup clients** (shared key pair, only one active)
-- ✅ **Background cleanup** of expired cache files
-- ✅ **Swagger UI** on the server for API exploration
+| File | Azione |
+|------|--------|
+| `Entities/LocalEpisodeEntity.cs` | NUOVO |
+| `Data/PublisherDbContext.cs` | NUOVO |
+| `Data/Repositories/ILocalEpisodeRepository.cs` | NUOVO |
+| `Data/Repositories/LocalEpisodeRepository.cs` | NUOVO |
+| `Data/Migrations/20260310000001_InitialCreate.cs` | NUOVO |
+| `Data/Migrations/PublisherDbContextModelSnapshot.cs` | NUOVO |
+| `Services/PublishService.cs` | SOSTITUISCE quello esistente |
+| `Program.cs` | SOSTITUISCE quello esistente |
 
-## Getting Started
+---
 
-### Prerequisites
+## NuGet packages da installare
 
-- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
-
-### Run Two Servers (Simulated Network)
-
-**Terminal 1 — Server A (port 5000)**
 ```bash
+# Server
+dotnet add DistopiaNetwork.Server package Microsoft.EntityFrameworkCore.SqlServer --version 9.*
+dotnet add DistopiaNetwork.Server package Microsoft.EntityFrameworkCore.Tools --version 9.*
+dotnet add DistopiaNetwork.Server package Microsoft.EntityFrameworkCore.Design --version 9.*
+
+# PublisherClient
+dotnet add DistopiaNetwork.PublisherClient package Microsoft.EntityFrameworkCore.Sqlite --version 9.*
+dotnet add DistopiaNetwork.PublisherClient package Microsoft.EntityFrameworkCore.Tools --version 9.*
+```
+
+---
+
+## Connection string SQL Server (appsettings.json)
+
+Aggiornare in `DistopiaNetwork.Server/appsettings.json`:
+
+```json
+"ConnectionStrings": {
+  "DefaultConnection": "Server=localhost;Database=DistopiaNetwork;Trusted_Connection=True;TrustServerCertificate=True;"
+}
+```
+
+Per Docker/Azure sostituire con la propria connection string.
+
+---
+
+## Migrazioni
+
+Le migrazioni sono già incluse nella cartella `Data/Migrations/` di ogni progetto.
+Vengono applicate automaticamente all'avvio tramite `db.Database.MigrateAsync()`.
+
+Per generare migrazioni future dopo modifiche alle Entity:
+
+```bash
+# Server
 cd DistopiaNetwork.Server
-# Edit appsettings.json: ServerId=server-a, Port=5000, PeerServers=["http://localhost:5001"]
-dotnet run
-```
+dotnet ef migrations add NomeMigrazione --context AppDbContext
 
-**Terminal 2 — Server B (port 5001)**
-```bash
-cd DistopiaNetwork.Server
-# Copy appsettings and change: ServerId=server-b, Port=5001, PeerServers=["http://localhost:5000"]
-dotnet run --urls http://localhost:5001
-```
-
-### Publish a Podcast
-
-```bash
+# PublisherClient  
 cd DistopiaNetwork.PublisherClient
-dotnet run
-# Commands: p → publish, q → quit
+dotnet ef migrations add NomeMigrazione --context PublisherDbContext
 ```
 
-### Listen as Browser
+---
 
-```bash
-cd DistopiaNetwork.BrowserClient
-dotnet run
-# Commands: l → list catalog, s → stream/download, q → quit
-```
+## Note importanti
 
-## API Reference
-
-Base URL: `http://localhost:5000`
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/podcasts` | List all podcasts |
-| GET | `/podcasts/{id}` | Get podcast by ID |
-| GET | `/podcasts/since/{timestamp}` | Sync: get new podcasts since Unix timestamp |
-| POST | `/podcast/publish` | Publish metadata (publisher → server) |
-| POST | `/podcast/{id}/upload` | Upload MP3 (publisher → server) |
-| GET | `/podcast/{id}/stream` | Stream MP3 (browser → server) |
-| GET | `/internal/file/{hash}` | Inter-server file transfer |
-| GET | `/status` | Server status info |
-| GET | `/swagger` | Interactive API docs |
-
-## Security
-
-- Publisher signs metadata with RSA private key
-- Servers verify signature on receipt; rejected if invalid
-- File integrity verified via SHA-256 on upload and inter-server transfer
-- Servers cannot alter podcast content (signatures prevent tampering)
-
-## Spec Sections Implemented
-
-| Section | Feature | Status |
-|---------|---------|--------|
-| 2 | System entities (Servers, Publishers, Browsers) | ✅ |
-| 3 | Metadata structure | ✅ |
-| 4 | Digital signatures | ✅ |
-| 5 | Server catalog synchronization | ✅ |
-| 6–7 | MP3 cache model + policy (1–7 day TTL) | ✅ |
-| 8–10 | Full streaming workflow cascade | ✅ |
-| 11 | Cache countdown reset on access | ✅ |
-| 12 | Publisher backup clients | ✅ |
-| 13 | Network scalability | ✅ |
-| 14 | Security properties | ✅ |
-| 17 | Sequence diagrams (see spec) | ✅ |
+- **ServerSettings.Section**: verificare che questa costante esista in `Configuration/ServerSettings.cs`
+- **PublisherSettings.Section**: verificare che questa costante esista in `Configuration/PublisherSettings.cs`
+- **CryptoHelper**: i metodi `VerifyMetadata`, `ComputeFileHash`, `SignMetadata` devono esistere in `DistopiaNetwork.Shared/Crypto/CryptoHelper.cs`
+- **Namespace**: adattare i namespace se il progetto usa convenzioni diverse

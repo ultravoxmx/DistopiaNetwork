@@ -1,192 +1,244 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
 using DistopiaNetwork.PublisherClient.Configuration;
+using DistopiaNetwork.PublisherClient.Data.Repositories;
+using DistopiaNetwork.PublisherClient.Entities;
 using DistopiaNetwork.Shared.Crypto;
 using DistopiaNetwork.Shared.Dto;
 using DistopiaNetwork.Shared.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Net;
-using System.Text.Json;
 
 namespace DistopiaNetwork.PublisherClient.Services;
 
 /// <summary>
-/// Handles the full podcast publication workflow:
-/// 1. Compute SHA-256 of the MP3
-/// 2. Build + sign metadata with the private key
-/// 3. POST metadata to server  — server rejects immediately if duplicate
-/// 4. Upload MP3 only if server confirms it is needed
+/// Gestisce il workflow completo di pubblicazione di un episodio.
+/// 
+/// Flusso con DAL:
+///   1. Leggi file MP3 e calcola SHA-256
+///   2. Controlla duplicati nel DB locale (offline, zero rete)
+///   3. Costruisci e firma i metadati RSA
+///   4. Salva episodio come Draft nel DB SQLite locale
+///   5. POST metadati al server → aggiorna stato a MetadataPublished
+///   6. Upload MP3 → aggiorna stato a FullyUploaded (o Failed)
+/// 
+/// In caso di interruzione tra i passi 5 e 6, al prossimo avvio
+/// GetPendingAsync() individua gli episodi in stato Draft/Failed
+/// e può riprendere l'upload.
 /// </summary>
 public class PublishService
 {
-    private readonly KeyStore _keys;
-    private readonly PublisherSettings _settings;
+    private readonly ILocalEpisodeRepository _repo;
+    private readonly KeyStore _keyStore;
     private readonly IHttpClientFactory _httpFactory;
+    private readonly PublisherSettings _settings;
     private readonly ILogger<PublishService> _logger;
 
-    private static readonly JsonSerializerOptions _jsonOpts = new()
-    {
-        PropertyNameCaseInsensitive = true   // handles both camelCase and PascalCase responses
-    };
-
     public PublishService(
-        KeyStore keys,
-        IOptions<PublisherSettings> opts,
+        ILocalEpisodeRepository repo,
+        KeyStore keyStore,
         IHttpClientFactory httpFactory,
+        IOptions<PublisherSettings> settings,
         ILogger<PublishService> logger)
     {
-        _keys = keys;
-        _settings = opts.Value;
+        _repo = repo;
+        _keyStore = keyStore;
         _httpFactory = httpFactory;
+        _settings = settings.Value;
         _logger = logger;
     }
 
+    /// <summary>
+    /// Pubblica un nuovo episodio.
+    /// Ritorna true se l'upload è completato con successo, false altrimenti.
+    /// </summary>
     public async Task<bool> PublishAsync(
-        string mp3Path,
+        string filePath,
         string title,
         string description,
         int durationSeconds,
-        string? imageUrl = null)
+        string? imageUrl = null,
+        CancellationToken ct = default)
     {
-        if (!_settings.IsActive)
+        // ── Passo 1: Leggi il file e calcola l'hash ───────────────────────────
+        if (!File.Exists(filePath))
         {
-            _logger.LogWarning("This client is a BACKUP and is not active. Aborting publish.");
+            _logger.LogError("File not found: {Path}", filePath);
             return false;
         }
 
-        // ── Read file ────────────────────────────────────────────────────────────
-        if (!File.Exists(mp3Path))
-        {
-            _logger.LogError("File not found: {Path}", mp3Path);
-            return false;
-        }
+        var data = await File.ReadAllBytesAsync(filePath, ct);
+        var fileHash = CryptoHelper.ComputeFileHash(data);
 
-        _logger.LogInformation("Reading MP3: {Path}", mp3Path);
-        byte[] mp3Data;
-        try
-        {
-            mp3Data = await File.ReadAllBytesAsync(mp3Path);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to read file: {Path}", mp3Path);
-            return false;
-        }
-
-        var fileHash = CryptoHelper.ComputeFileHash(mp3Data);
         _logger.LogInformation("File hash: {Hash}", fileHash);
 
-        // ── Build + sign metadata ─────────────────────────────────────────────────
-        var metadata = new PodcastMetadata
+        // ── Passo 2: Controlla duplicati nel DB locale ────────────────────────
+        var existingLocal = await _repo.FindByHashAsync(fileHash);
+        if (existingLocal is not null)
         {
-            PodcastId        = Guid.NewGuid().ToString(),
-            PublisherPubKey  = _keys.PublicKey,
-            PublisherServer  = _settings.ServerId,
-            Title            = title,
-            Description      = description,
-            ImageUrl         = string.IsNullOrWhiteSpace(imageUrl) ? null : imageUrl,
-            FileHash         = fileHash,
-            FileSize         = mp3Data.Length,
-            DurationSeconds  = durationSeconds,
-            PublishTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-        };
+            _logger.LogWarning("Duplicate detected locally: '{Title}' (Status: {Status})",
+                existingLocal.Title, existingLocal.UploadStatus);
 
-        try
-        {
-            metadata.Signature = CryptoHelper.SignMetadata(metadata, _keys.PrivateKey);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to sign metadata. Check your private key file.");
+            // Se era Failed, offri di riprovare
+            if (existingLocal.UploadStatus == UploadStatuses.Failed)
+            {
+                _logger.LogInformation("Previous upload failed. Retrying...");
+                return await RetryUploadAsync(existingLocal, data, ct);
+            }
+
+            Console.WriteLine($"⚠ Già pubblicato come '{existingLocal.Title}' (stato: {existingLocal.UploadStatus})");
             return false;
         }
 
-        _logger.LogInformation("Metadata signed. PodcastId: {Id}", metadata.PodcastId);
+        // ── Passo 3: Costruisci e firma i metadati ────────────────────────────
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var podcastId = Guid.NewGuid().ToString();
 
-        var http    = _httpFactory.CreateClient();
-        var baseUrl = _settings.ServerUrl.TrimEnd('/');
+        var metadata = new PodcastMetadata
+        {
+            PodcastId       = podcastId,
+            PublisherPubKey = _keyStore.PublicKey,
+            PublisherServer = _settings.ServerId,
+            Title           = title,
+            Description     = description,
+            ImageUrl        = imageUrl,
+            FileHash        = fileHash,
+            FileSize        = data.Length,
+            DurationSeconds = durationSeconds,
+            PublishTimestamp = timestamp,
+            Signature       = string.Empty   // verrà popolata sotto
+        };
 
-        // ── Step 1: POST metadata ─────────────────────────────────────────────────
-        string uploadUrl;
+        metadata.Signature = CryptoHelper.SignMetadata(metadata, _keyStore.PrivateKey);
+
+        // ── Passo 4: Salva come Draft nel DB locale ───────────────────────────
+        var episode = new LocalEpisodeEntity
+        {
+            PodcastId        = podcastId,
+            Title            = title,
+            Description      = description,
+            FileHash         = fileHash,
+            LocalFilePath    = Path.GetFullPath(filePath),
+            FileSize         = data.Length,
+            DurationSeconds  = durationSeconds,
+            PublishTimestamp = timestamp,
+            UploadStatus     = UploadStatuses.Draft,
+            CreatedAt        = DateTime.UtcNow,
+        };
+
+        await _repo.AddAsync(episode);
+        await _repo.SaveChangesAsync(ct);
+        _logger.LogInformation("Episode saved as Draft: {Id}", podcastId);
+
+        // ── Passo 5: POST metadati al server ──────────────────────────────────
+        var http = _httpFactory.CreateClient();
+        PublishResponse? publishResult;
+
         try
         {
-            var metaJson    = JsonSerializer.Serialize(metadata);
-            var metaContent = new StringContent(metaJson, System.Text.Encoding.UTF8, "application/json");
+            var metaResponse = await http.PostAsJsonAsync(
+                $"{_settings.ServerUrl}/podcast/publish", metadata, ct);
 
-            _logger.LogInformation("POST {Url}/podcast/publish", baseUrl);
-            var metaResponse = await http.PostAsync($"{baseUrl}/podcast/publish", metaContent);
-
-            // 409 Conflict = server already has this exact file
             if (metaResponse.StatusCode == HttpStatusCode.Conflict)
             {
-                var body = await metaResponse.Content.ReadAsStringAsync();
-                _logger.LogWarning("Duplicate detected by server: {Body}", body);
-                Console.WriteLine($"\n⚠  Duplicate — {body}");
+                var body = await metaResponse.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning("Server rejected (duplicate): {Body}", body);
+                await UpdateStatusAsync(episode, UploadStatuses.Failed, $"Conflict: {body}", ct);
                 return false;
             }
 
             if (!metaResponse.IsSuccessStatusCode)
             {
-                var err = await metaResponse.Content.ReadAsStringAsync();
-                _logger.LogError("Metadata publish failed [{Status}]: {Error}",
-                    (int)metaResponse.StatusCode, err);
+                var err = await metaResponse.Content.ReadAsStringAsync(ct);
+                await UpdateStatusAsync(episode, UploadStatuses.Failed, $"HTTP {(int)metaResponse.StatusCode}: {err}", ct);
                 return false;
             }
 
-            var publishJson   = await metaResponse.Content.ReadAsStringAsync();
-            _logger.LogDebug("Server response: {Json}", publishJson);
-
-            // Deserialize with case-insensitive matching to handle both
-            // camelCase ("uploadUrl") and PascalCase ("UploadUrl") responses.
-            var publishResult = JsonSerializer.Deserialize<PublishResponse>(publishJson, _jsonOpts);
-
-            uploadUrl = publishResult?.UploadUrl ?? string.Empty;
-            if (string.IsNullOrEmpty(uploadUrl))
-            {
-                _logger.LogError("Server returned success but no uploadUrl. Response: {Json}", publishJson);
-                return false;
-            }
+            publishResult = await metaResponse.Content.ReadFromJsonAsync<PublishResponse>(cancellationToken: ct);
         }
-        catch (HttpRequestException ex)
+        catch (Exception ex)
         {
-            _logger.LogError(ex,
-                "Network error posting metadata to {Url}. " +
-                "Is the server running? Check ServerUrl in appsettings.json.",
-                baseUrl);
-            Console.WriteLine($"\n✗  Cannot reach server at {baseUrl}");
-            Console.WriteLine($"   {ex.Message}");
-            if (ex.InnerException is not null)
-                Console.WriteLine($"   Inner: {ex.InnerException.Message}");
+            _logger.LogError(ex, "Network error during metadata POST.");
+            await UpdateStatusAsync(episode, UploadStatuses.Failed, ex.Message, ct);
             return false;
         }
 
-        // ── Step 2: Upload MP3 ────────────────────────────────────────────────────
+        await UpdateStatusAsync(episode, UploadStatuses.MetadataPublished, null, ct);
+        _logger.LogInformation("Metadata published. Upload URL: {Url}", publishResult?.UploadUrl);
+
+        // ── Passo 6: Upload MP3 ───────────────────────────────────────────────
+        return await UploadMp3Async(episode, data, publishResult?.UploadUrl, ct);
+    }
+
+    /// <summary>
+    /// Riprova l'upload di un episodio precedentemente fallito.
+    /// </summary>
+    public async Task<bool> RetryUploadAsync(LocalEpisodeEntity episode, byte[]? data = null, CancellationToken ct = default)
+    {
+        data ??= await File.ReadAllBytesAsync(episode.LocalFilePath, ct);
+        var uploadUrl = $"/podcast/{episode.PodcastId}/upload";
+        return await UploadMp3Async(episode, data, uploadUrl, ct);
+    }
+
+    /// <summary>
+    /// Elenca gli episodi in stato Draft o Failed per riprendere upload interrotti.
+    /// </summary>
+    public async Task<IEnumerable<LocalEpisodeEntity>> GetPendingEpisodesAsync()
+        => await _repo.GetPendingAsync();
+
+    /// <summary>
+    /// Elenca tutti gli episodi pubblicati con successo.
+    /// </summary>
+    public async Task<IEnumerable<LocalEpisodeEntity>> GetPublishedEpisodesAsync()
+        => await _repo.GetAllByStatusAsync(UploadStatuses.FullyUploaded);
+
+    // ── Helpers privati ───────────────────────────────────────────────────────
+
+    private async Task<bool> UploadMp3Async(
+        LocalEpisodeEntity episode, byte[] data, string? uploadPath, CancellationToken ct)
+    {
+        var url = $"{_settings.ServerUrl}{uploadPath ?? $"/podcast/{episode.PodcastId}/upload"}";
+
         try
         {
-            _logger.LogInformation("Uploading MP3 ({Size:N0} bytes) → {Url}", mp3Data.Length, uploadUrl);
-            var mp3Content = new ByteArrayContent(mp3Data);
-            mp3Content.Headers.ContentType =
-                new System.Net.Http.Headers.MediaTypeHeaderValue("audio/mpeg");
+            var http = _httpFactory.CreateClient();
+            using var content = new ByteArrayContent(data);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/mpeg");
 
-            var uploadResponse = await http.PostAsync($"{baseUrl}{uploadUrl}", mp3Content);
+            var response = await http.PostAsync(url, content, ct);
 
-            if (!uploadResponse.IsSuccessStatusCode)
+            if (!response.IsSuccessStatusCode)
             {
-                var err = await uploadResponse.Content.ReadAsStringAsync();
-                _logger.LogError("MP3 upload failed [{Status}]: {Error}",
-                    (int)uploadResponse.StatusCode, err);
+                var err = await response.Content.ReadAsStringAsync(ct);
+                await UpdateStatusAsync(episode, UploadStatuses.Failed, $"Upload HTTP {(int)response.StatusCode}: {err}", ct);
                 return false;
             }
 
-            var uploadMsg = await uploadResponse.Content.ReadAsStringAsync();
-            _logger.LogInformation("Upload complete. Server says: {Msg}", uploadMsg);
+            await UpdateStatusAsync(episode, UploadStatuses.FullyUploaded, null, ct);
+            _logger.LogInformation("✓ Episode '{Title}' fully uploaded.", episode.Title);
+            return true;
         }
-        catch (HttpRequestException ex)
+        catch (Exception ex)
         {
-            _logger.LogError(ex, "Network error uploading MP3 to {Url}.", uploadUrl);
+            _logger.LogError(ex, "Network error during MP3 upload.");
+            await UpdateStatusAsync(episode, UploadStatuses.Failed, ex.Message, ct);
             return false;
         }
+    }
 
-        Console.WriteLine($"\n✓  Published — ID: {metadata.PodcastId}");
-        return true;
+    private async Task UpdateStatusAsync(
+        LocalEpisodeEntity episode, string status, string? errorMessage, CancellationToken ct)
+    {
+        // Ricarica l'entità con tracking per aggiornare
+        var tracked = await _repo.GetByIdAsync(episode.PodcastId);
+        if (tracked is null) return;
+
+        tracked.UploadStatus     = status;
+        tracked.LastAttemptAt    = DateTime.UtcNow;
+        tracked.LastErrorMessage = errorMessage;
+
+        _repo.Update(tracked);
+        await _repo.SaveChangesAsync(ct);
     }
 }

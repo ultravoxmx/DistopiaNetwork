@@ -1,93 +1,88 @@
 using DistopiaNetwork.Server.Configuration;
+using DistopiaNetwork.Server.Data;
+using DistopiaNetwork.Server.Data.Repositories;
+using DistopiaNetwork.Server.Data.UnitOfWork;
 using DistopiaNetwork.Server.Services;
-using Microsoft.AspNetCore.Diagnostics;
-using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ─── Configuration ────────────────────────────────────────────────────────────
+// ── Configurazione ────────────────────────────────────────────────────────────
 builder.Services.Configure<ServerSettings>(
     builder.Configuration.GetSection(ServerSettings.Section));
 
-// ─── Kestrel: aumento limite body a 500 MB ───────────────────────────────────
-// CRITICAL: senza questo, qualsiasi body > 30 MB viene troncato da Kestrel
-// PRIMA che il controller lo legga, causando "response ended prematurely"
-// sul client. Il limite per-endpoint [RequestSizeLimit] nel controller
-// agisce DOPO questo limite globale, quindi entrambi devono essere impostati.
-builder.Services.Configure<KestrelServerOptions>(options =>
-{
-    options.Limits.MaxRequestBodySize = 500_000_000; // 500 MB
-});
-builder.Services.Configure<FormOptions>(options =>
-{
-    options.MultipartBodyLengthLimit = 500_000_000;
-});
+// ── Database (SQL Server + EF Core) ──────────────────────────────────────────
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        sql =>
+        {
+            sql.MigrationsAssembly("DistopiaNetwork.Server");
+            // Retry automatico per disconnessioni transitorie (Azure, cloud)
+            sql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null);
+        }
+    )
+);
 
-// ─── Services ─────────────────────────────────────────────────────────────────
-builder.Services.AddSingleton<CatalogService>();
-builder.Services.AddSingleton<CacheService>();
+// ── Repository e Unit of Work (tutti Scoped: vivono per la durata di ogni richiesta) ──
+builder.Services.AddScoped<IPodcastRepository, PodcastRepository>();
+builder.Services.AddScoped<ICacheEntryRepository, CacheEntryRepository>();
+builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+// ── Services applicativi ──────────────────────────────────────────────────────
+// CatalogService e CacheService ora sono Scoped (dipendono da IUnitOfWork Scoped)
+builder.Services.AddScoped<CatalogService>();
+builder.Services.AddScoped<CacheService>();
 builder.Services.AddScoped<StreamingService>();
 
+// ── Background Services (Singleton, usano IServiceScopeFactory internamente) ──
 builder.Services.AddHostedService<SyncService>();
 builder.Services.AddHostedService<CacheCleanupService>();
 
-// Named "peer" client with extended timeout for large inter-server file transfers
-builder.Services.AddHttpClient("peer", client =>
-{
-    client.Timeout = TimeSpan.FromMinutes(10);
-});
-builder.Services.AddHttpClient(); // default client
-
-// ─── ASP.NET Core ─────────────────────────────────────────────────────────────
+// ── HTTP + API ────────────────────────────────────────────────────────────────
+builder.Services.AddHttpClient();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    c.SwaggerDoc("v1", new() { Title = "Distopia Network Server API", Version = "v1" });
+    c.SwaggerDoc("v1", new() { Title = "Distopia Network API", Version = "v1" });
 });
 
 var app = builder.Build();
 
-// ─── Global exception handler ────────────────────────────────────────────────
-// Catches any unhandled exception and returns a clean JSON 500
-// instead of dropping the TCP connection (which causes "response ended prematurely")
-app.UseExceptionHandler(errorApp =>
+// ── Migrazione automatica all'avvio ──────────────────────────────────────────
+// Applica tutte le migrazioni pendenti. In produzione valuta di separare
+// questo step dalla pipeline di deploy con: dotnet ef database update
+using (var scope = app.Services.CreateScope())
 {
-    errorApp.Run(async context =>
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    try
     {
-        context.Response.StatusCode  = 500;
-        context.Response.ContentType = "application/json";
+        logger.LogInformation("Applying database migrations...");
+        await db.Database.MigrateAsync();
+        logger.LogInformation("Database ready.");
+    }
+    catch (Exception ex)
+    {
+        logger.LogCritical(ex, "Failed to apply migrations. Check connection string.");
+        throw;
+    }
+}
 
-        var feature = context.Features.Get<IExceptionHandlerFeature>();
-        var ex      = feature?.Error;
+// ── Middleware pipeline ───────────────────────────────────────────────────────
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
 
-        var logger = context.RequestServices
-            .GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "Unhandled exception on {Method} {Path}",
-            context.Request.Method, context.Request.Path);
-
-        await context.Response.WriteAsJsonAsync(new
-        {
-            error   = "Internal server error.",
-            detail  = ex?.Message,
-            path    = context.Request.Path.Value
-        });
-    });
-});
-
-// ─── Swagger ──────────────────────────────────────────────────────────────────
-app.UseSwagger();
-app.UseSwaggerUI();
-
-// ─── Static files ─────────────────────────────────────────────────────────────
+// UseDefaultFiles DEVE precedere UseStaticFiles
 app.UseDefaultFiles(new DefaultFilesOptions
 {
     DefaultFileNames = new List<string> { "index.html" }
 });
 app.UseStaticFiles();
-
-// ─── Controllers ──────────────────────────────────────────────────────────────
 app.MapControllers();
 
 app.Run();
