@@ -3,10 +3,12 @@ using DistopiaNetwork.PublisherClient.Data;
 using DistopiaNetwork.PublisherClient.Data.Repositories;
 using DistopiaNetwork.PublisherClient.Entities;
 using DistopiaNetwork.PublisherClient.Services;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 // ── Setup Host e Dependency Injection ────────────────────────────────────────
 var host = Host.CreateDefaultBuilder(args)
@@ -41,13 +43,34 @@ var host = Host.CreateDefaultBuilder(args)
     .Build();
 
 // ── Migrazione automatica SQLite all'avvio ────────────────────────────────────
-// Crea il file .db e le tabelle se non esistono ancora
+// Crea il file .db e le tabelle se non esistono ancora.
+// Se il DB locale è in stato incoerente (tipico dopo cambi migration durante sviluppo),
+// può essere resettato automaticamente perché contiene solo coda locale del publisher.
 using (var scope = host.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<PublisherDbContext>();
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    await db.Database.MigrateAsync();
-    logger.LogInformation("SQLite database ready at: {Path}", db.Database.GetDbConnection().DataSource);
+    var settings = scope.ServiceProvider.GetRequiredService<IOptions<PublisherSettings>>().Value;
+
+    try
+    {
+        await db.Database.MigrateAsync();
+    }
+    catch (SqliteException ex) when (settings.AutoResetCorruptLocalDb && IsRecoverableMigrationState(ex))
+    {
+        var dbPath = db.Database.GetDbConnection().DataSource;
+        logger.LogWarning(ex,
+            "Schema SQLite locale incoerente. Ricreo il DB locale del publisher in {Path}.",
+            dbPath);
+
+        if (!string.IsNullOrWhiteSpace(dbPath) && File.Exists(dbPath))
+            File.Delete(dbPath);
+
+        await db.Database.MigrateAsync();
+        logger.LogInformation("DB locale del publisher ricreato correttamente.");
+    }
+
+    logger.LogInformation("Database SQLite pronto in: {Path}", db.Database.GetDbConnection().DataSource);
 }
 
 // ── Riprendi upload interrotti ────────────────────────────────────────────────
@@ -110,17 +133,26 @@ while (true)
     {
         using var scope = host.Services.CreateScope();
         var publishService = scope.ServiceProvider.GetRequiredService<PublishService>();
-        var all = await publishService.GetPublishedEpisodesAsync();
+
+        var all = (await publishService.GetPublishedEpisodesAsync()).ToList();
+        if (all.Count == 0)
+        {
+            Console.WriteLine("Nessun episodio locale salvato.");
+            continue;
+        }
 
         Console.WriteLine("\n── Episodi pubblicati ─────────────────────────────");
         foreach (var ep in all)
+        {
             Console.WriteLine($"  [{ep.PublishTimestamp}] {ep.Title} ({ep.DurationSeconds / 60}min) — {ep.UploadStatus}");
+        }
         Console.WriteLine();
     }
     else if (cmd == "r")
     {
         using var scope = host.Services.CreateScope();
         var publishService = scope.ServiceProvider.GetRequiredService<PublishService>();
+
         var pending = (await publishService.GetPendingEpisodesAsync()).ToList();
 
         if (pending.Count == 0)
@@ -139,4 +171,13 @@ while (true)
     {
         Console.WriteLine("Comando non riconosciuto. Usa: p | l | r | q");
     }
+}
+
+// Nota: i match restano in inglese perché i messaggi standard di SQLite/EF vengono emessi in inglese.
+static bool IsRecoverableMigrationState(SqliteException ex)
+{
+    var message = ex.Message;
+    return message.Contains("no such table", StringComparison.OrdinalIgnoreCase)
+        || message.Contains("already exists", StringComparison.OrdinalIgnoreCase)
+        || message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase);
 }
