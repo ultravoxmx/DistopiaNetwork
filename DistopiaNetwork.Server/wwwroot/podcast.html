@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DISTOPIA — Player</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:        #080b0f;
+      --bg2:       #0d1117;
+      --bg3:       #111820;
+      --bg4:       #162030;
+      --border:    #1e2d3d;
+      --accent:    #00c8ff;
+      --accent2:   #ff4d6d;
+      --accent3:   #39ff14;
+      --text:      #c9d6e3;
+      --text-dim:  #4a6070;
+      --text-mid:  #7a96a8;
+      --mono:      'Share Tech Mono', monospace;
+      --sans:      'Barlow Condensed', sans-serif;
+      --body:      'Barlow', sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--body);
+      min-height: 100vh;
+    }
+
+    /* scanlines */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 1000; pointer-events: none;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px,
+        rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px);
+    }
+
+    /* ── Header ── */
+    header {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(8,11,15,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      display: flex; align-items: center; gap: 1.5rem;
+      height: 64px;
+    }
+
+    .logo {
+      font-family: var(--sans); font-weight: 900; font-size: 1.5rem;
+      letter-spacing: 0.15em; color: #fff; text-transform: uppercase;
+      display: flex; align-items: center; gap: 0.5rem; text-decoration: none;
+    }
+
+    .logo span { color: var(--accent); text-shadow: 0 0 12px var(--accent); }
+
+    .logo-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent3); box-shadow: 0 0 8px var(--accent3);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.4; transform: scale(0.7); }
+    }
+
+    .back-btn {
+      font-family: var(--mono); font-size: 0.72rem;
+      padding: 0.4rem 0.9rem; border: 1px solid var(--border); border-radius: 3px;
+      color: var(--text-dim); background: transparent; cursor: pointer;
+      text-decoration: none; display: flex; align-items: center; gap: 0.4rem;
+      transition: all 0.15s; text-transform: uppercase; letter-spacing: 0.08em;
+    }
+
+    .back-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .breadcrumb {
+      font-family: var(--mono); font-size: 0.65rem; color: var(--text-dim);
+      display: flex; align-items: center; gap: 0.5rem;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    .breadcrumb span { color: var(--accent); }
+
+    /* ── Layout ── */
+    .layout {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2.5rem 2rem;
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 2rem;
+      align-items: start;
+    }
+
+    /* ── Left column ── */
+    .left-col { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* ── Artwork ── */
+    .artwork {
+      width: 100%;
+      aspect-ratio: 1;
+      background: linear-gradient(135deg, #0a1520, #0d1d2e);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      position: relative;
+      overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    .artwork-initials {
+      font-family: var(--sans); font-weight: 900;
+      font-size: 5rem; color: rgba(255,255,255,0.06);
+      letter-spacing: 0.1em; pointer-events: none;
+    }
+
+    .artwork img {
+      width: 100%; height: 100%; object-fit: cover;
+      position: absolute; inset: 0;
+    }
+
+    .artwork::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 30% 30%,
+        rgba(0,200,255,0.08) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .artwork-bar {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+      background-size: 300%;
+      animation: bar-shift 4s linear infinite;
+    }
+
+    @keyframes bar-shift { to { background-position: 300%; } }
+
+    /* ── Metadata panel ── */
+    .meta-panel {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .meta-row {
+      display: flex; padding: 0.65rem 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .meta-row:last-child { border-bottom: none; }
+
+    .meta-key {
+      font-family: var(--mono); font-size: 0.6rem;
+      color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em;
+      width: 90px; flex-shrink: 0; padding-top: 1px;
+    }
+
+    .meta-val {
+      font-family: var(--mono); font-size: 0.68rem;
+      color: var(--text); word-break: break-all;
+    }
+
+    .meta-val.accent  { color: var(--accent); }
+    .meta-val.accent3 { color: var(--accent3); }
+    .meta-val.mono    { font-size: 0.6rem; color: var(--text-dim); }
+
+    /* ── Right column ── */
+    .right-col { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* ── Title area ── */
+    .title-area { display: flex; flex-direction: column; gap: 0.5rem; }
+
+    .episode-label {
+      font-family: var(--mono); font-size: 0.65rem;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .episode-title {
+      font-family: var(--sans); font-weight: 900;
+      font-size: 2.4rem; line-height: 1.1; color: #fff;
+    }
+
+    .episode-desc {
+      font-size: 0.9rem; color: var(--text-mid);
+      line-height: 1.7; max-width: 600px;
+      margin-top: 0.25rem;
+    }
+
+    /* ── Player ── */
+    .player {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    /* Visualizer canvas */
+    .viz-container {
+      position: relative;
+      height: 80px;
+      background: var(--bg3);
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    #vizCanvas {
+      width: 100%; height: 100%;
+      display: block;
+    }
+
+    /* Progress track */
+    .progress-area {
+      padding: 0.85rem 1.2rem 0.6rem;
+    }
+
+    .progress-track {
+      width: 100%; height: 4px;
+      background: var(--bg4);
+      border-radius: 2px;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), rgba(0,200,255,0.6));
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.15s linear;
+    }
+
+    .time-row {
+      display: flex; justify-content: space-between;
+      font-family: var(--mono); font-size: 0.65rem;
+      color: var(--text-dim); margin-top: 0.45rem;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex; align-items: center;
+      gap: 0.75rem; padding: 0.75rem 1.2rem 1rem;
+    }
+
+    .ctrl-btn {
+      background: transparent; border: none;
+      cursor: pointer; color: var(--text-mid);
+      display: flex; align-items: center; justify-content: center;
+      transition: color 0.15s; padding: 0.25rem; border-radius: 3px;
+    }
+
+    .ctrl-btn:hover { color: var(--accent); }
+    .ctrl-btn.active { color: var(--accent); }
+
+    .play-pause-btn {
+      width: 48px; height: 48px;
+      background: var(--accent); border: none;
+      border-radius: 50%; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 18px rgba(0,200,255,0.35);
+      transition: transform 0.1s, box-shadow 0.2s;
+      flex-shrink: 0;
+    }
+
+    .play-pause-btn:hover {
+      transform: scale(1.07);
+      box-shadow: 0 0 28px rgba(0,200,255,0.55);
+    }
+
+    .play-pause-btn:active { transform: scale(0.96); }
+
+    .play-pause-btn svg { fill: #000; }
+
+    .volume-wrap {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin-left: auto;
+    }
+
+    .volume-slider {
+      -webkit-appearance: none;
+      width: 80px; height: 3px;
+      background: var(--bg4); border-radius: 2px; cursor: pointer;
+    }
+
+    .volume-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px; height: 12px;
+      border-radius: 50%; background: var(--accent);
+      box-shadow: 0 0 6px rgba(0,200,255,0.5);
+    }
+
+    .speed-btn {
+      font-family: var(--mono); font-size: 0.65rem;
+      letter-spacing: 0.04em; color: var(--text-dim);
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 3px; padding: 0.25rem 0.5rem;
+      cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    }
+
+    .speed-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Download bar ── */
+    .download-bar {
+      display: flex; gap: 0.75rem; padding: 0 0.4rem;
+    }
+
+    .dl-btn {
+      flex: 1;
+      font-family: var(--mono); font-size: 0.7rem;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 0.65rem 1rem;
+      border: 1px solid var(--border); border-radius: 3px;
+      color: var(--text-mid); background: var(--bg3);
+      cursor: pointer; text-align: center; text-decoration: none;
+      display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+      transition: all 0.2s;
+    }
+
+    .dl-btn:hover {
+      border-color: var(--accent); color: var(--accent);
+      background: rgba(0,200,255,0.05);
+    }
+
+    .dl-btn.primary {
+      border-color: var(--accent); color: var(--bg);
+      background: var(--accent); font-weight: 700;
+    }
+
+    .dl-btn.primary:hover {
+      background: #00e0ff; box-shadow: 0 0 16px rgba(0,200,255,0.4);
+    }
+
+    /* ── Signature panel ── */
+    .sig-panel {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .sig-head {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono); font-size: 0.68rem;
+      letter-spacing: 0.08em; text-transform: uppercase;
+    }
+
+    .sig-verified {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent3);
+      box-shadow: 0 0 8px var(--accent3);
+    }
+
+    .sig-body {
+      padding: 0.85rem 1rem;
+      display: flex; flex-direction: column; gap: 0.75rem;
+    }
+
+    .sig-field { display: flex; flex-direction: column; gap: 0.25rem; }
+
+    .sig-label {
+      font-family: var(--mono); font-size: 0.58rem;
+      color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.1em;
+    }
+
+    .sig-value {
+      font-family: var(--mono); font-size: 0.6rem;
+      color: var(--text-mid); word-break: break-all;
+      background: var(--bg3); border: 1px solid var(--border);
+      padding: 0.4rem 0.6rem; border-radius: 2px;
+    }
+
+    /* ── Loading / error overlay ── */
+    #loadingOverlay {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      min-height: 50vh; gap: 1rem;
+    }
+
+    .spinner {
+      width: 36px; height: 36px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .load-label {
+      font-family: var(--mono); font-size: 0.72rem; color: var(--text-dim);
+    }
+
+    .error-box {
+      text-align: center; padding: 3rem;
+      font-family: var(--mono); color: var(--accent2);
+    }
+
+    /* ── Status bar ── */
+    .status-bar {
+      font-family: var(--mono); font-size: 0.62rem;
+      color: var(--text-dim); padding: 0.4rem 1.2rem;
+      border-top: 1px solid var(--border);
+      display: flex; gap: 1rem;
+    }
+
+    .status-bar span { color: var(--accent); }
+
+    /* ── Responsive ── */
+    @media (max-width: 840px) {
+      .layout { grid-template-columns: 1fr; }
+      .left-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+      .artwork { aspect-ratio: 1; }
+    }
+
+    @media (max-width: 540px) {
+      .left-col { grid-template-columns: 1fr; }
+      .episode-title { font-size: 1.8rem; }
+    }
+
+    /* ── Page load animation ── */
+    .layout { animation: fadein 0.4s ease; }
+
+    @keyframes fadein {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <a href="/" class="logo">
+    <div class="logo-dot"></div>
+    DISTO<span>PIA</span>
+  </a>
+
+  <a href="/" class="back-btn">← Back</a>
+
+  <div class="breadcrumb">
+    <span>catalog</span> / <span id="bcTitle">loading…</span>
+  </div>
+</header>
+
+<!-- ── Content ── -->
+<div id="loadingOverlay">
+  <div class="spinner"></div>
+  <div class="load-label">FETCHING METADATA…</div>
+</div>
+
+<div class="layout" id="pageLayout" style="display:none;">
+
+  <!-- ── Left column ── -->
+  <div class="left-col">
+
+    <div class="artwork">
+      <div class="artwork-initials" id="artInitials">EP</div>
+      <img id="artImg" src="" alt="" style="display:none;" />
+      <div class="artwork-bar"></div>
+    </div>
+
+    <div class="meta-panel">
+      <div class="meta-row">
+        <div class="meta-key">ID</div>
+        <div class="meta-val mono" id="mId"></div>
+      </div>
+      <div class="meta-row">
+        <div class="meta-key">Server</div>
+        <div class="meta-val accent" id="mServer"></div>
+      </div>
+      <div class="meta-row">
+        <div class="meta-key">Published</div>
+        <div class="meta-val" id="mDate"></div>
+      </div>
+      <div class="meta-row">
+        <div class="meta-key">Duration</div>
+        <div class="meta-val accent3" id="mDuration"></div>
+      </div>
+      <div class="meta-row">
+        <div class="meta-key">File Size</div>
+        <div class="meta-val" id="mSize"></div>
+      </div>
+      <div class="meta-row">
+        <div class="meta-key">SHA-256</div>
+        <div class="meta-val mono" id="mHash"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Right column ── -->
+  <div class="right-col">
+
+    <div class="title-area">
+      <div class="episode-label">EPISODE · DISTOPIA NETWORK</div>
+      <h1 class="episode-title" id="epTitle">Loading…</h1>
+      <p class="episode-desc" id="epDesc"></p>
+    </div>
+
+    <!-- ── Player ── -->
+    <div class="player">
+
+      <div class="viz-container">
+        <canvas id="vizCanvas"></canvas>
+      </div>
+
+      <div class="progress-area">
+        <div class="progress-track" id="progressTrack">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <div class="time-row">
+          <span id="timeElapsed">0:00</span>
+          <span id="timeRemain">0:00</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="ctrl-btn" id="btnRew" title="Rewind 10s">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M11.99 5V1l-5 5 5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6h-2c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
+            <text x="8.5" y="14.5" font-size="5.5" font-family="monospace" fill="currentColor">10</text>
+          </svg>
+        </button>
+
+        <button class="play-pause-btn" id="btnPlay">
+          <svg id="iconPlay" width="20" height="20" viewBox="0 0 24 24">
+            <polygon points="5,3 19,12 5,21"/>
+          </svg>
+          <svg id="iconPause" width="20" height="20" viewBox="0 0 24 24" style="display:none;">
+            <rect x="6" y="4" width="4" height="16"/>
+            <rect x="14" y="4" width="4" height="16"/>
+          </svg>
+        </button>
+
+        <button class="ctrl-btn" id="btnFwd" title="Forward 30s">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M18 13c0 3.31-2.69 6-6 6s-6-2.69-6-6 2.69-6 6-6v4l5-5-5-5v4c-4.42 0-8 3.58-8 8s3.58 8 8 8 8-3.58 8-8h-2z"/>
+            <text x="8.5" y="14.5" font-size="5.5" font-family="monospace" fill="currentColor">30</text>
+          </svg>
+        </button>
+
+        <button class="speed-btn" id="btnSpeed">1.0×</button>
+
+        <div class="volume-wrap">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="color:var(--text-dim)">
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+          </svg>
+          <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.02" value="1" />
+        </div>
+      </div>
+
+      <div class="status-bar" id="playerStatus">
+        <span id="statusText">READY</span>
+        <span id="bufferInfo"></span>
+      </div>
+    </div>
+
+    <!-- ── Download ── -->
+    <div class="download-bar">
+      <a class="dl-btn primary" id="btnStream" href="#" download>
+        ↓ Download MP3
+      </a>
+      <button class="dl-btn" id="btnCopyId" onclick="copyId()">
+        ⎘ Copy ID
+      </button>
+      <button class="dl-btn" id="btnCopyHash" onclick="copyHash()">
+        ⎘ Copy Hash
+      </button>
+    </div>
+
+    <!-- ── Signature panel ── -->
+    <div class="sig-panel">
+      <div class="sig-head">
+        <div class="sig-verified"></div>
+        Cryptographic Integrity
+      </div>
+      <div class="sig-body">
+        <div class="sig-field">
+          <div class="sig-label">Publisher Public Key</div>
+          <div class="sig-value" id="sigPubkey">—</div>
+        </div>
+        <div class="sig-field">
+          <div class="sig-label">Digital Signature (RSA-2048 · SHA-256)</div>
+          <div class="sig-value" id="sigSig">—</div>
+        </div>
+        <div class="sig-field">
+          <div class="sig-label">File Integrity</div>
+          <div class="sig-value" id="sigHash">—</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Audio element -->
+<audio id="audio" preload="none"></audio>
+
+<script>
+  // ── Parse podcast ID from URL
+  const params = new URLSearchParams(location.search);
+  const podcastId = params.get('id');
+
+  if (!podcastId) {
+    document.getElementById('loadingOverlay').innerHTML =
+      '<div class="error-box">No podcast ID specified.<br><a href="/" style="color:var(--accent)">← Back to catalog</a></div>';
+  }
+
+  let podcast = null;
+  const audio = document.getElementById('audio');
+  const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+  let speedIdx = 2;
+
+  // ── Helpers
+  function fmtTime(sec) {
+    if (!sec || isNaN(sec)) return '0:00';
+    sec = Math.floor(sec);
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${m}:${String(s).padStart(2,'0')}`;
+  }
+
+  function fmtBytes(b) {
+    if (!b) return '—';
+    if (b > 1_000_000_000) return (b / 1_000_000_000).toFixed(2) + ' GB';
+    if (b > 1_000_000)     return (b / 1_000_000).toFixed(1) + ' MB';
+    return (b / 1000).toFixed(0) + ' KB';
+  }
+
+  function fmtDate(ts) {
+    if (!ts) return '—';
+    return new Date(ts * 1000).toLocaleString('en-US',
+      { year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+  }
+
+  // ── Load podcast metadata
+  async function loadPodcast() {
+    try {
+      const res = await fetch(`/podcasts/${podcastId}`);
+      if (!res.ok) throw new Error('Podcast not found (HTTP ' + res.status + ')');
+      podcast = await res.json();
+      populate(podcast);
+      document.getElementById('loadingOverlay').style.display = 'none';
+      document.getElementById('pageLayout').style.display = 'grid';
+    } catch (e) {
+      document.getElementById('loadingOverlay').innerHTML =
+        `<div class="error-box">${e.message}<br><br><a href="/" style="color:var(--accent)">← Back</a></div>`;
+    }
+  }
+
+  // ── Populate page with podcast data
+  function populate(p) {
+    document.title = `DISTOPIA — ${p.title || 'Episode'}`;
+
+    // Breadcrumb
+    document.getElementById('bcTitle').textContent =
+      (p.title || 'episode').substring(0, 40);
+
+    // Title area
+    document.getElementById('epTitle').textContent = p.title || 'Untitled';
+    document.getElementById('epDesc').textContent = p.description || '';
+
+    // Artwork
+    const initials = (p.title || 'EP').substring(0, 2).toUpperCase();
+    document.getElementById('artInitials').textContent = initials;
+    if (p.image_url) {
+      const img = document.getElementById('artImg');
+      img.src = p.image_url;
+      img.style.display = 'block';
+      document.getElementById('artInitials').style.display = 'none';
+    }
+
+    // Metadata rows
+    document.getElementById('mId').textContent       = p.podcast_id;
+    document.getElementById('mServer').textContent   = p.publisher_server || '—';
+    document.getElementById('mDate').textContent     = fmtDate(p.publish_timestamp);
+    document.getElementById('mDuration').textContent = fmtTime(p.duration_seconds);
+    document.getElementById('mSize').textContent     = fmtBytes(p.file_size);
+    document.getElementById('mHash').textContent     = (p.file_hash || '—');
+
+    // Signature panel
+    document.getElementById('sigPubkey').textContent = p.publisher_pubkey || '—';
+    document.getElementById('sigSig').textContent    = p.signature        || '—';
+    document.getElementById('sigHash').textContent   =
+      `SHA-256: ${p.file_hash || '—'}  ·  ${fmtBytes(p.file_size)}`;
+
+    // Set audio src
+    const streamUrl = `/podcast/${p.podcast_id}/stream`;
+    audio.src = streamUrl;
+    document.getElementById('btnStream').href = streamUrl;
+
+    // Time display
+    document.getElementById('timeRemain').textContent = fmtTime(p.duration_seconds);
+  }
+
+  // ── Visualizer (canvas-based animated bars)
+  const canvas = document.getElementById('vizCanvas');
+  const ctx = canvas.getContext('2d');
+  let vizBars = [];
+  let animFrame;
+  let isPlaying = false;
+
+  function initViz() {
+    const N = Math.floor(canvas.offsetWidth / 5);
+    vizBars = Array.from({ length: N }, () => ({
+      h: Math.random() * 0.3 + 0.05,
+      target: Math.random() * 0.3 + 0.05,
+      speed: Math.random() * 0.04 + 0.01,
+    }));
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+  }
+
+  function drawViz() {
+    animFrame = requestAnimationFrame(drawViz);
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const barW = W / vizBars.length;
+    const progress = audio.duration ? (audio.currentTime / audio.duration) : 0;
+
+    vizBars.forEach((bar, i) => {
+      // Animate bars
+      if (isPlaying) {
+        if (Math.random() < 0.06) bar.target = Math.random() * 0.9 + 0.05;
+        bar.h += (bar.target - bar.h) * bar.speed;
+      } else {
+        bar.h += (0.08 - bar.h) * 0.05;
+      }
+
+      const barH = bar.h * H;
+      const x = i * barW;
+      const played = (i / vizBars.length) <= progress;
+
+      const color = played
+        ? `rgba(0, 200, 255, 0.85)`
+        : `rgba(30, 45, 61, 0.9)`;
+
+      ctx.fillStyle = color;
+      ctx.fillRect(x + 1, H - barH, barW - 2, barH);
+
+      // Reflection
+      ctx.fillStyle = played
+        ? `rgba(0, 200, 255, 0.12)`
+        : `rgba(30, 45, 61, 0.15)`;
+      ctx.fillRect(x + 1, H, barW - 2, barH * 0.25);
+    });
+
+    // Progress line
+    ctx.fillStyle = 'rgba(0, 200, 255, 0.9)';
+    ctx.fillRect(progress * W, 0, 2, H);
+  }
+
+  // ── Player controls
+  document.getElementById('btnPlay').addEventListener('click', () => {
+    if (audio.paused) {
+      audio.play();
+    } else {
+      audio.pause();
+    }
+  });
+
+  document.getElementById('btnRew').addEventListener('click', () => {
+    audio.currentTime = Math.max(0, audio.currentTime - 10);
+  });
+
+  document.getElementById('btnFwd').addEventListener('click', () => {
+    audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 30);
+  });
+
+  document.getElementById('btnSpeed').addEventListener('click', () => {
+    speedIdx = (speedIdx + 1) % speeds.length;
+    audio.playbackRate = speeds[speedIdx];
+    document.getElementById('btnSpeed').textContent = speeds[speedIdx].toFixed(1) + '×';
+  });
+
+  document.getElementById('volumeSlider').addEventListener('input', e => {
+    audio.volume = e.target.value;
+  });
+
+  // ── Progress track click/drag
+  const track = document.getElementById('progressTrack');
+  track.addEventListener('click', e => {
+    if (!audio.duration) return;
+    const rect = track.getBoundingClientRect();
+    const ratio = (e.clientX - rect.left) / rect.width;
+    audio.currentTime = ratio * audio.duration;
+  });
+
+  // ── Audio events
+  audio.addEventListener('play', () => {
+    isPlaying = true;
+    document.getElementById('iconPlay').style.display  = 'none';
+    document.getElementById('iconPause').style.display = 'block';
+    document.getElementById('statusText').textContent  = 'PLAYING';
+  });
+
+  audio.addEventListener('pause', () => {
+    isPlaying = false;
+    document.getElementById('iconPlay').style.display  = 'block';
+    document.getElementById('iconPause').style.display = 'none';
+    document.getElementById('statusText').textContent  = 'PAUSED';
+  });
+
+  audio.addEventListener('ended', () => {
+    isPlaying = false;
+    document.getElementById('iconPlay').style.display  = 'block';
+    document.getElementById('iconPause').style.display = 'none';
+    document.getElementById('statusText').textContent  = 'ENDED';
+  });
+
+  audio.addEventListener('waiting', () => {
+    document.getElementById('statusText').textContent = 'BUFFERING…';
+  });
+
+  audio.addEventListener('canplay', () => {
+    document.getElementById('statusText').textContent = isPlaying ? 'PLAYING' : 'READY';
+  });
+
+  audio.addEventListener('timeupdate', () => {
+    const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+    document.getElementById('progressBar').style.width   = pct + '%';
+    document.getElementById('timeElapsed').textContent   = fmtTime(audio.currentTime);
+    document.getElementById('timeRemain').textContent    = fmtTime(audio.duration - audio.currentTime);
+
+    // Buffer info
+    if (audio.buffered.length > 0) {
+      const buf = audio.buffered.end(audio.buffered.length - 1);
+      document.getElementById('bufferInfo').textContent =
+        `BUFFERED ${fmtTime(buf)} / ${fmtTime(audio.duration)}`;
+    }
+  });
+
+  audio.addEventListener('error', () => {
+    document.getElementById('statusText').textContent = 'ERROR — FILE UNAVAILABLE';
+  });
+
+  // ── Copy helpers
+  function copyId() {
+    if (!podcast) return;
+    navigator.clipboard.writeText(podcast.podcast_id);
+    showFeedback('btnCopyId', 'Copied!');
+  }
+
+  function copyHash() {
+    if (!podcast) return;
+    navigator.clipboard.writeText(podcast.file_hash);
+    showFeedback('btnCopyHash', 'Copied!');
+  }
+
+  function showFeedback(btnId, msg) {
+    const btn = document.getElementById(btnId);
+    const orig = btn.textContent;
+    btn.textContent = msg;
+    btn.style.borderColor = 'var(--accent3)';
+    btn.style.color = 'var(--accent3)';
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.style.borderColor = '';
+      btn.style.color = '';
+    }, 1500);
+  }
+
+  // ── Init
+  if (podcastId) {
+    loadPodcast();
+    initViz();
+    drawViz();
+    window.addEventListener('resize', initViz);
+  }
+</script>
+</body>
+</html>
