@@ -20,10 +20,10 @@ public class PodcastController : ControllerBase
         StreamingService streaming,
         ILogger<PodcastController> logger)
     {
-        _catalog  = catalog;
-        _cache    = cache;
+        _catalog = catalog;
+        _cache = cache;
         _streaming = streaming;
-        _logger   = logger;
+        _logger = logger;
     }
 
     // ── GET /podcasts ─────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ public class PodcastController : ControllerBase
 
         return Ok(new PublishResponse
         {
-            Success   = true,
+            Success = true,
             UploadUrl = $"/podcast/{metadata.PodcastId}/upload"
         });
     }
@@ -168,10 +168,10 @@ public class PodcastController : ControllerBase
     {
         return Ok(new
         {
-            serverId     = settings.Value.ServerId,
-            catalogSize  = _catalog.Count(),
-            cachedFiles  = await _cache.CountActiveAsync(),
-            timestamp    = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            serverId = settings.Value.ServerId,
+            catalogSize = _catalog.Count(),
+            cachedFiles = await _cache.CountActiveAsync(),
+            timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         });
     }
 }

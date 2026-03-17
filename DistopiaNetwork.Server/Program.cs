@@ -18,24 +18,30 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         sql =>
         {
             sql.MigrationsAssembly("DistopiaNetwork.Server");
-            // Retry automatico per disconnessioni transitorie (Azure, cloud)
             sql.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorNumbersToAdd: null);
         }
     )
 );
 
-// ── Repository e Unit of Work (tutti Scoped: vivono per la durata di ogni richiesta) ──
+// ── Repository e Unit of Work ─────────────────────────────────────────────────
 builder.Services.AddScoped<IPodcastRepository, PodcastRepository>();
 builder.Services.AddScoped<ICacheEntryRepository, CacheEntryRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // ── Services applicativi ──────────────────────────────────────────────────────
-// CatalogService e CacheService ora sono Scoped (dipendono da IUnitOfWork Scoped)
 builder.Services.AddScoped<CatalogService>();
 builder.Services.AddScoped<CacheService>();
 builder.Services.AddScoped<StreamingService>();
 
-// ── Background Services (Singleton, usano IServiceScopeFactory internamente) ──
+// ── WebSocket: gestore connessioni publisher (Singleton: vive per tutto il processo) ──
+// PublisherConnectionManager è Singleton perché mantiene il dizionario delle connessioni
+// attive tra tutte le richieste HTTP. Non può essere Scoped.
+builder.Services.AddSingleton<PublisherConnectionManager>();
+
+// PublisherWebSocketHandler è Transient: una nuova istanza per ogni connessione WS
+builder.Services.AddTransient<PublisherWebSocketHandler>();
+
+// ── Background Services ───────────────────────────────────────────────────────
 builder.Services.AddHostedService<SyncService>();
 builder.Services.AddHostedService<CacheCleanupService>();
 
@@ -51,16 +57,14 @@ builder.Services.AddSwaggerGen(c =>
 var app = builder.Build();
 
 // ── Migrazione automatica all'avvio ──────────────────────────────────────────
-// Applica tutte le migrazioni pendenti. In produzione valuta di separare
-// questo step dalla pipeline di deploy con: dotnet ef database update
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var db     = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
     try
     {
         logger.LogInformation("Applying database migrations...");
-        await db.Database.MigrateAsync();
+        await db.Database.EnsureCreatedAsync();
         logger.LogInformation("Database ready.");
     }
     catch (Exception ex)
@@ -77,7 +81,32 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// UseDefaultFiles DEVE precedere UseStaticFiles
+// WebSocket deve essere abilitato PRIMA di MapControllers
+app.UseWebSockets(new WebSocketOptions
+{
+    // Ping automatico ogni 30s per rilevare connessioni zombie
+    KeepAliveInterval = TimeSpan.FromSeconds(30)
+});
+
+// ── Endpoint WebSocket per publisher client ───────────────────────────────────
+// I publisher client si connettono a ws://server/ws/publisher all'avvio
+// e mantengono la connessione aperta per rispondere alle richieste di file.
+app.Map("/ws/publisher", async (HttpContext context) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsync("WebSocket connection required.");
+        return;
+    }
+
+    var ws      = await context.WebSockets.AcceptWebSocketAsync();
+    var handler = context.RequestServices.GetRequiredService<PublisherWebSocketHandler>();
+
+    // HandleAsync blocca finché la connessione non viene chiusa
+    await handler.HandleAsync(ws, context.RequestAborted);
+});
+
 app.UseDefaultFiles(new DefaultFilesOptions
 {
     DefaultFileNames = new List<string> { "index.html" }

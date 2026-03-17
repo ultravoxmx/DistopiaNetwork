@@ -1,26 +1,20 @@
 using DistopiaNetwork.PublisherClient.Configuration;
 using DistopiaNetwork.PublisherClient.Data;
 using DistopiaNetwork.PublisherClient.Data.Repositories;
-using DistopiaNetwork.PublisherClient.Entities;
 using DistopiaNetwork.PublisherClient.Services;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 // ── Setup Host e Dependency Injection ────────────────────────────────────────
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices((ctx, services) =>
     {
-        // Configurazione da appsettings.json
         services.Configure<PublisherSettings>(
             ctx.Configuration.GetSection(PublisherSettings.Section));
 
         // ── SQLite ────────────────────────────────────────────────────────────
-        // Il file .db viene creato in %LOCALAPPDATA%/DistopiaNetwork/publisher.db
-        // Su Linux/macOS: ~/.local/share/DistopiaNetwork/publisher.db
         var dbDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "DistopiaNetwork");
@@ -28,32 +22,40 @@ var host = Host.CreateDefaultBuilder(args)
         var dbPath = Path.Combine(dbDir, "publisher.db");
 
         services.AddDbContext<PublisherDbContext>(options =>
-            options.UseSqlite($"Data Source={dbPath}")
-        );
+            options.UseSqlite($"Data Source={dbPath}"));
 
-        // Repository (Scoped: una istanza per scope DI)
         services.AddScoped<ILocalEpisodeRepository, LocalEpisodeRepository>();
 
-        // Services applicativi
         services.AddSingleton<KeyStore>();
         services.AddScoped<PublishService>();
 
         services.AddHttpClient();
+
+        // ── WebSocket: connessione persistente al server ───────────────────────
+        // ServerConnectionService è un BackgroundService: parte con l'host,
+        // si connette al server via WebSocket e rimane in ascolto di richieste
+        // REQUEST_FILE per tutta la durata del processo.
+        // Funziona anche da reti private (NAT) perché è il client a iniziare
+        // la connessione.
+        services.AddHostedService<ServerConnectionService>();
     })
     .Build();
 
 // ── Migrazione automatica SQLite all'avvio ────────────────────────────────────
-// Crea il file .db e le tabelle se non esistono ancora
 using (var scope = host.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<PublisherDbContext>();
+    var db     = scope.ServiceProvider.GetRequiredService<PublisherDbContext>();
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    await db.Database.MigrateAsync();
+    await db.Database.EnsureCreatedAsync();
     logger.LogInformation("SQLite database ready at: {Path}", db.Database.GetDbConnection().DataSource);
 }
 
+// ── Avvia il background service (WebSocket) ───────────────────────────────────
+// Il BackgroundService parte in background: non blocca il REPL.
+// La connessione WebSocket viene stabilita mentre l'utente usa il client.
+await host.StartAsync();
+
 // ── Riprendi upload interrotti ────────────────────────────────────────────────
-// All'avvio, controlla se ci sono episodi in Draft o Failed dal run precedente
 using (var scope = host.Services.CreateScope())
 {
     var publishService = scope.ServiceProvider.GetRequiredService<PublishService>();
@@ -142,3 +144,7 @@ while (true)
         Console.WriteLine("Comando non riconosciuto. Usa: p | l | r | q");
     }
 }
+
+// ── Shutdown pulito ───────────────────────────────────────────────────────────
+// Ferma il BackgroundService (chiude il WebSocket) prima di uscire
+await host.StopAsync();
