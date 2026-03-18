@@ -17,27 +17,21 @@ namespace DistopiaNetwork.Server.Services;
 /// Usa IServiceScopeFactory per creare uno scope dedicato ad ogni ciclo di sync —
 /// pattern standard per risolvere la Captive Dependency Singleton → Scoped.
 /// </summary>
-public class SyncService : BackgroundService
+public class SyncService(
+    IServiceScopeFactory scopeFactory,
+    IHttpClientFactory httpFactory,
+    IOptions<ServerSettings> settings,
+    ILogger<SyncService> logger) : BackgroundService
 {
-    private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IHttpClientFactory _httpFactory;
-    private readonly ServerSettings _settings;
-    private readonly ILogger<SyncService> _logger;
+    private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
+
+    private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
+    private readonly IHttpClientFactory _httpFactory = httpFactory;
+    private readonly ServerSettings _settings = settings.Value;
+    private readonly ILogger<SyncService> _logger = logger;
 
     // Timestamp dell'ultima sync riuscita per ogni peer (cursore incrementale)
     private readonly ConcurrentDictionary<string, long> _lastSync = new();
-
-    public SyncService(
-        IServiceScopeFactory scopeFactory,
-        IHttpClientFactory httpFactory,
-        IOptions<ServerSettings> settings,
-        ILogger<SyncService> logger)
-    {
-        _scopeFactory = scopeFactory;
-        _httpFactory = httpFactory;
-        _settings = settings.Value;
-        _logger = logger;
-    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -80,8 +74,7 @@ public class SyncService : BackgroundService
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadAsStringAsync(ct);
-        var syncResponse = JsonSerializer.Deserialize<SyncResponse>(json,
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        var syncResponse = JsonSerializer.Deserialize<SyncResponse>(json, _jsonOptions);
 
         if (syncResponse?.Podcasts is null || syncResponse.Podcasts.Count == 0)
         {
@@ -89,7 +82,6 @@ public class SyncService : BackgroundService
             return;
         }
 
-        // Crea uno scope Scoped per CatalogService — risolve la Captive Dependency
         using var scope = _scopeFactory.CreateScope();
         var catalog = scope.ServiceProvider.GetRequiredService<CatalogService>();
 

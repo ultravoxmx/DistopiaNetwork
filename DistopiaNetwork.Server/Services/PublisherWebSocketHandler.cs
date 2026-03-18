@@ -18,18 +18,12 @@ namespace DistopiaNetwork.Server.Services;
 /// Questo handler viene istanziato una volta per connessione WebSocket,
 /// all'interno di PublisherWebSocketMiddleware.
 /// </summary>
-public class PublisherWebSocketHandler
+public class PublisherWebSocketHandler(
+    PublisherConnectionManager manager,
+    ILogger<PublisherWebSocketHandler> logger)
 {
-    private readonly PublisherConnectionManager _manager;
-    private readonly ILogger<PublisherWebSocketHandler> _logger;
-
-    public PublisherWebSocketHandler(
-        PublisherConnectionManager manager,
-        ILogger<PublisherWebSocketHandler> logger)
-    {
-        _manager = manager;
-        _logger = logger;
-    }
+    private readonly PublisherConnectionManager _manager = manager;
+    private readonly ILogger<PublisherWebSocketHandler> _logger = logger;
 
     /// <summary>
     /// Gestisce l'intera sessione WebSocket di un publisher client.
@@ -128,7 +122,7 @@ public class PublisherWebSocketHandler
 
         } while (!result.EndOfMessage);
 
-        var json = Encoding.UTF8.GetString(buffer.ToArray());
+        var json = Encoding.UTF8.GetString([.. buffer]);
         return JsonSerializer.Deserialize<WsServerMessage>(json,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
     }

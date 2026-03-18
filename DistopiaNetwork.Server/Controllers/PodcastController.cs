@@ -7,24 +7,16 @@ namespace DistopiaNetwork.Server.Controllers;
 
 [ApiController]
 [Route("")]
-public class PodcastController : ControllerBase
+public class PodcastController(
+    CatalogService catalog,
+    CacheService cache,
+    StreamingService streaming,
+    ILogger<PodcastController> logger) : ControllerBase
 {
-    private readonly CatalogService _catalog;
-    private readonly CacheService _cache;
-    private readonly StreamingService _streaming;
-    private readonly ILogger<PodcastController> _logger;
-
-    public PodcastController(
-        CatalogService catalog,
-        CacheService cache,
-        StreamingService streaming,
-        ILogger<PodcastController> logger)
-    {
-        _catalog = catalog;
-        _cache = cache;
-        _streaming = streaming;
-        _logger = logger;
-    }
+    private readonly CatalogService _catalog = catalog;
+    private readonly CacheService _cache = cache;
+    private readonly StreamingService _streaming = streaming;
+    private readonly ILogger<PodcastController> _logger = logger;
 
     // ── GET /podcasts ─────────────────────────────────────────────────────────
     /// <summary>Ritorna tutti i podcast nel catalogo.</summary>
@@ -41,7 +33,7 @@ public class PodcastController : ControllerBase
     public async Task<IActionResult> GetSince(long timestamp)
     {
         var podcasts = await _catalog.GetSinceAsync(timestamp);
-        return Ok(new SyncResponse { Podcasts = podcasts.ToList() });
+        return Ok(new SyncResponse { Podcasts = [.. podcasts] });
     }
 
     // ── GET /podcasts/{id} ────────────────────────────────────────────────────

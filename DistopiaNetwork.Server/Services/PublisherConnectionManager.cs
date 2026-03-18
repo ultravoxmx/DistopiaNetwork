@@ -165,7 +165,7 @@ public class PublisherConnectionManager
             if (_pending.TryGetValue(message.FileHash, out var tcs))
             {
                 _logger.LogWarning("Publisher reported FILE_NOT_FOUND for {Hash}", message.FileHash);
-                tcs.TrySetResult(Array.Empty<byte>());
+                tcs.TrySetResult([]);
             }
         }
     }
