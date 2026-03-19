@@ -37,6 +37,9 @@ public class PodcastMetadata
     [JsonPropertyName("publish_timestamp")]
     public long PublishTimestamp { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+    [JsonPropertyName("is_deleted")]
+    public bool IsDeleted { get; set; }
+
     [JsonPropertyName("signature")]
     public string Signature { get; set; } = string.Empty;
 }

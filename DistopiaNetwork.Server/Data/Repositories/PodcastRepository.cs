@@ -61,6 +61,14 @@ public class PodcastRepository : IPodcastRepository
 
     public void Update(PodcastEntity entity)
     {
+        var tracked = _db.Podcasts.Local.FirstOrDefault(p => p.PodcastId == entity.PodcastId);
+        if (tracked is not null && !ReferenceEquals(tracked, entity))
+        {
+            _db.Entry(tracked).CurrentValues.SetValues(entity);
+            tracked.UpdatedAt = DateTime.UtcNow;
+            return;
+        }
+
         entity.UpdatedAt = DateTime.UtcNow;
         _db.Podcasts.Update(entity);
     }
