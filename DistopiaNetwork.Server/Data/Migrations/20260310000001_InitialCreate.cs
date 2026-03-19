@@ -25,6 +25,7 @@ namespace DistopiaNetwork.Server.Data.Migrations
                     FileSize = table.Column<long>(type: "bigint", nullable: false),
                     DurationSeconds = table.Column<int>(type: "int", nullable: false),
                     PublishTimestamp = table.Column<long>(type: "bigint", nullable: false),
+                    IsDeleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
                     Signature = table.Column<string>(type: "nvarchar(MAX)", nullable: false),
                     InsertedAt = table.Column<DateTime>(type: "datetime2", nullable: false, defaultValueSql: "GETUTCDATE()"),
                     UpdatedAt = table.Column<DateTime>(type: "datetime2", nullable: true)
@@ -70,6 +71,11 @@ namespace DistopiaNetwork.Server.Data.Migrations
                 name: "IX_Podcasts_PublisherServer",
                 table: "Podcasts",
                 column: "PublisherServer");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Podcasts_IsDeleted",
+                table: "Podcasts",
+                column: "IsDeleted");
 
             // Indice per CacheEntries
             migrationBuilder.CreateIndex(

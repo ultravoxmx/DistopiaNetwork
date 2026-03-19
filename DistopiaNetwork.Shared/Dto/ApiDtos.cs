@@ -28,3 +28,34 @@ public class FileRequest
     public string FileHash { get; set; } = string.Empty;
     public string RequestingServerId { get; set; } = string.Empty;
 }
+
+public class UpdateMetadataRequest
+{
+    public string PodcastId { get; set; } = string.Empty;
+    public string PublisherPubKey { get; set; } = string.Empty;
+    public long TimestampUnix { get; set; }
+    public string Nonce { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string? ImageUrl { get; set; }
+    public string Signature { get; set; } = string.Empty;
+    public string MetadataSignature { get; set; } = string.Empty;
+}
+
+public class DeletePodcastRequest
+{
+    public string PodcastId { get; set; } = string.Empty;
+    public string PublisherPubKey { get; set; } = string.Empty;
+    public long TimestampUnix { get; set; }
+    public string Nonce { get; set; } = string.Empty;
+    public string? Reason { get; set; }
+    public string Signature { get; set; } = string.Empty;
+    public string MetadataSignature { get; set; } = string.Empty;
+}
+
+public class OperationResponse
+{
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    public long ServerTimestamp { get; set; }
+}
