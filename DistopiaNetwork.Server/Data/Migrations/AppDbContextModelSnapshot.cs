@@ -34,11 +34,13 @@ namespace DistopiaNetwork.Server.Data.Migrations
                 b.Property<long>("FileSize").HasColumnType("bigint");
                 b.Property<int>("DurationSeconds").HasColumnType("int");
                 b.Property<long>("PublishTimestamp").HasColumnType("bigint");
+                b.Property<bool>("IsDeleted").HasColumnType("bit");
                 b.Property<string>("Signature").HasColumnType("nvarchar(MAX)").IsRequired();
                 b.Property<DateTime>("InsertedAt").HasColumnType("datetime2");
                 b.Property<DateTime?>("UpdatedAt").HasColumnType("datetime2");
                 b.HasKey("PodcastId");
                 b.HasIndex("FileHash").HasDatabaseName("IX_Podcasts_FileHash");
+                b.HasIndex("IsDeleted").HasDatabaseName("IX_Podcasts_IsDeleted");
                 b.HasIndex("PublishTimestamp").HasDatabaseName("IX_Podcasts_PublishTimestamp");
                 b.HasIndex("PublisherServer").HasDatabaseName("IX_Podcasts_PublisherServer");
                 b.ToTable("Podcasts");

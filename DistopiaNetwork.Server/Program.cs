@@ -32,6 +32,7 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<CatalogService>();
 builder.Services.AddScoped<CacheService>();
 builder.Services.AddScoped<StreamingService>();
+builder.Services.AddSingleton<SignedRequestVerifier>();
 
 // ── WebSocket: gestore connessioni publisher (Singleton: vive per tutto il processo) ──
 // PublisherConnectionManager è Singleton perché mantiene il dizionario delle connessioni
