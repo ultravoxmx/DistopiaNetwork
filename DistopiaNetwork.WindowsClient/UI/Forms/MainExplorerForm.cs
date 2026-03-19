@@ -1,0 +1,192 @@
+using DistopiaNetwork.WindowsClient.Domain.Models;
+using DistopiaNetwork.WindowsClient.Domain.Services;
+
+namespace DistopiaNetwork.WindowsClient.UI.Forms;
+
+public class MainExplorerForm : Form
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    private readonly DataGridView _grid = new() { Dock = DockStyle.Fill, ReadOnly = true, AutoGenerateColumns = false };
+    private readonly PropertyGrid _details = new() { Dock = DockStyle.Fill };
+    private readonly Button _btnRefresh = new() { Text = "Refresh" };
+    private readonly Button _btnUpload = new() { Text = "Upload New" };
+    private readonly Button _btnEdit = new() { Text = "Edit Metadata" };
+    private readonly Button _btnDelete = new() { Text = "Delete" };
+
+    private List<PodcastItemView> _currentItems = [];
+
+    public MainExplorerForm(IServiceScopeFactory scopeFactory)
+    {
+        _scopeFactory = scopeFactory;
+
+        Text = "Distopia Publisher Windows Client — My Podcasts";
+        Width = 1400;
+        Height = 820;
+
+        BuildUi();
+
+        Load += async (_, _) => await RefreshCatalogAsync();
+    }
+
+    private void BuildUi()
+    {
+        var main = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 940 };
+
+        _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        _grid.MultiSelect = false;
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.Title), HeaderText = "Title", Width = 270 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.PublisherServer), HeaderText = "Server", Width = 120 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.PublishTimestamp), HeaderText = "Timestamp", Width = 140 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.DurationSeconds), HeaderText = "Duration (s)", Width = 110 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.FileHash), HeaderText = "File hash", Width = 240 });
+        _grid.SelectionChanged += (_, _) => UpdateDetails();
+
+        var toolPanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true };
+        _btnRefresh.Click += async (_, _) => await RefreshCatalogAsync();
+        _btnUpload.Click += async (_, _) => await UploadNewAsync();
+        _btnEdit.Click += async (_, _) => await EditSelectedAsync();
+        _btnDelete.Click += async (_, _) => await DeleteSelectedAsync();
+        toolPanel.Controls.AddRange([_btnRefresh, _btnUpload, _btnEdit, _btnDelete]);
+
+        var gridPanel = new Panel { Dock = DockStyle.Fill };
+        gridPanel.Controls.Add(_grid);
+        gridPanel.Controls.Add(toolPanel);
+
+        main.Panel1.Controls.Add(gridPanel);
+        main.Panel2.Controls.Add(_details);
+
+        Controls.Add(main);
+    }
+
+    private async Task RefreshCatalogAsync()
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var catalog = scope.ServiceProvider.GetRequiredService<CatalogService>();
+            _currentItems = await catalog.LoadAsync();
+            _grid.DataSource = _currentItems;
+            UpdateDetails();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to load catalog: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private PodcastItemView? Selected()
+        => _grid.CurrentRow?.DataBoundItem as PodcastItemView;
+
+    private void UpdateDetails()
+    {
+        var selected = Selected();
+        _details.SelectedObject = selected;
+
+        var hasSelection = selected is not null;
+        _btnEdit.Enabled = hasSelection;
+        _btnDelete.Enabled = hasSelection;
+    }
+
+    private async Task UploadNewAsync()
+    {
+        var filePath = Prompt("Percorso file MP3", string.Empty);
+        if (string.IsNullOrWhiteSpace(filePath)) return;
+
+        filePath = filePath.Trim();
+        if (!File.Exists(filePath))
+        {
+            MessageBox.Show($"File non trovato: {filePath}", "Upload", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var title = Prompt("Titolo episodio", Path.GetFileNameWithoutExtension(filePath));
+        if (string.IsNullOrWhiteSpace(title)) return;
+
+        var description = Prompt("Descrizione", string.Empty) ?? string.Empty;
+        var durationText = Prompt("Durata in secondi", "0") ?? "0";
+        _ = int.TryParse(durationText, out var durationSeconds);
+        var imageUrl = Prompt("Image URL (optional)", string.Empty);
+
+        using var scope = _scopeFactory.CreateScope();
+        var publishService = scope.ServiceProvider.GetRequiredService<PublishService>();
+
+        var result = await publishService.PublishAsync(
+            filePath,
+            title,
+            description,
+            durationSeconds,
+            string.IsNullOrWhiteSpace(imageUrl) ? null : imageUrl);
+
+        if (!result.Success)
+        {
+            MessageBox.Show(result.Error ?? "Publish failed.", "Upload", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        await RefreshCatalogAsync();
+    }
+
+    private async Task EditSelectedAsync()
+    {
+        var selected = Selected();
+        if (selected is null) return;
+
+        var newTitle = Prompt("Nuovo titolo", selected.Title);
+        if (newTitle is null) return;
+
+        var newDesc = Prompt("Nuova descrizione", string.Empty) ?? string.Empty;
+        var newImage = Prompt("Nuovo URL immagine", string.Empty);
+
+        using var scope = _scopeFactory.CreateScope();
+        var editService = scope.ServiceProvider.GetRequiredService<MetadataEditService>();
+
+        var result = await editService.UpdateAsync(selected.PodcastId, newTitle, newDesc, string.IsNullOrWhiteSpace(newImage) ? null : newImage);
+        if (!result.Success)
+        {
+            MessageBox.Show(result.Error ?? "Update failed.", "Update metadata", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        await RefreshCatalogAsync();
+    }
+
+    private async Task DeleteSelectedAsync()
+    {
+        var selected = Selected();
+        if (selected is null) return;
+
+        var confirm = MessageBox.Show(
+            $"Eliminare '{selected.Title}'? Questa azione verrà propagata nella rete.",
+            "Conferma eliminazione",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+
+        if (confirm != DialogResult.Yes) return;
+
+        using var scope = _scopeFactory.CreateScope();
+        var deleteService = scope.ServiceProvider.GetRequiredService<DeleteService>();
+
+        var result = await deleteService.DeleteAsync(selected.PodcastId, "Deleted from WindowsClient");
+        if (!result.Success)
+        {
+            MessageBox.Show(result.Error ?? "Delete failed.", "Delete podcast", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        await RefreshCatalogAsync();
+    }
+
+    private static string? Prompt(string title, string initialValue)
+    {
+        using var form = new Form { Width = 560, Height = 160, Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent };
+        var text = new TextBox { Left = 16, Top = 16, Width = 510, Text = initialValue };
+        var ok = new Button { Text = "OK", Left = 370, Width = 75, Top = 60, DialogResult = DialogResult.OK };
+        var cancel = new Button { Text = "Cancel", Left = 451, Width = 75, Top = 60, DialogResult = DialogResult.Cancel };
+        form.Controls.AddRange([text, ok, cancel]);
+        form.AcceptButton = ok;
+        form.CancelButton = cancel;
+
+        return form.ShowDialog() == DialogResult.OK ? text.Text.Trim() : null;
+    }
+}

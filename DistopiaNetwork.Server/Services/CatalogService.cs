@@ -62,7 +62,10 @@ public class CatalogService
         if (existing is null)
             await _uow.Podcasts.AddAsync(MapToEntity(metadata));
         else
-            _uow.Podcasts.Update(MapToEntity(metadata));
+        {
+            ApplyToTrackedEntity(existing, metadata);
+            existing.UpdatedAt = DateTime.UtcNow;
+        }
 
         await _uow.SaveChangesAsync(ct);
 
@@ -80,11 +83,11 @@ public class CatalogService
     {
         // Hit L1
         if (_memCache.TryGetValue(podcastId, out var cached))
-            return cached;
+            return cached.IsDeleted ? null : cached;
 
         // Miss L1 → cerca nel DB e popola L1
         var entity = await _uow.Podcasts.GetByIdAsync(podcastId);
-        if (entity is null) return null;
+        if (entity is null || entity.IsDeleted) return null;
 
         var metadata = MapToModel(entity);
         _memCache[podcastId] = metadata;
@@ -95,7 +98,9 @@ public class CatalogService
     /// Ritorna tutti gli episodi del catalogo.
     /// </summary>
     public async Task<IEnumerable<PodcastMetadata>> GetAllAsync()
-        => (await _uow.Podcasts.GetAllAsync()).Select(MapToModel);
+        => (await _uow.Podcasts.GetAllAsync())
+            .Where(p => !p.IsDeleted)
+            .Select(MapToModel);
 
     /// <summary>
     /// Ritorna gli episodi pubblicati dopo il timestamp dato.
@@ -103,6 +108,19 @@ public class CatalogService
     /// </summary>
     public async Task<IEnumerable<PodcastMetadata>> GetSinceAsync(long unixTimestamp)
         => (await _uow.Podcasts.GetSinceAsync(unixTimestamp)).Select(MapToModel);
+
+    public async Task<PodcastMetadata?> GetRawAsync(string podcastId)
+    {
+        if (_memCache.TryGetValue(podcastId, out var cached))
+            return cached;
+
+        var entity = await _uow.Podcasts.GetByIdAsync(podcastId);
+        if (entity is null) return null;
+
+        var metadata = MapToModel(entity);
+        _memCache[podcastId] = metadata;
+        return metadata;
+    }
 
     /// <summary>
     /// Cerca un episodio per FileHash (qualsiasi publisher).
@@ -124,7 +142,7 @@ public class CatalogService
         // Recupera l'entità completa via query diretta
         var all = await _uow.Podcasts.GetAllAsync();
         var found = all.FirstOrDefault(p => p.FileHash == fileHash);
-        return found is null ? null : MapToModel(found);
+        return found is null || found.IsDeleted ? null : MapToModel(found);
     }
 
     /// <summary>
@@ -146,6 +164,7 @@ public class CatalogService
         FileSize        = m.FileSize,
         DurationSeconds = m.DurationSeconds,
         PublishTimestamp = m.PublishTimestamp,
+        IsDeleted       = m.IsDeleted,
         Signature       = m.Signature,
     };
 
@@ -161,6 +180,22 @@ public class CatalogService
         FileSize        = e.FileSize,
         DurationSeconds = e.DurationSeconds,
         PublishTimestamp = e.PublishTimestamp,
+        IsDeleted       = e.IsDeleted,
         Signature       = e.Signature,
     };
+
+    private static void ApplyToTrackedEntity(PodcastEntity target, PodcastMetadata source)
+    {
+        target.PublisherPubKey = source.PublisherPubKey;
+        target.PublisherServer = source.PublisherServer;
+        target.Title = source.Title;
+        target.Description = source.Description ?? string.Empty;
+        target.ImageUrl = source.ImageUrl;
+        target.FileHash = source.FileHash;
+        target.FileSize = source.FileSize;
+        target.DurationSeconds = source.DurationSeconds;
+        target.PublishTimestamp = source.PublishTimestamp;
+        target.IsDeleted = source.IsDeleted;
+        target.Signature = source.Signature;
+    }
 }

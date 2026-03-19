@@ -25,6 +25,11 @@ public static class CryptoHelper
     public static string SignMetadata(Models.PodcastMetadata metadata, string privateKeyBase64)
     {
         var payload = GetSignablePayload(metadata);
+        return SignPayload(payload, privateKeyBase64);
+    }
+
+    public static string SignPayload(string payload, string privateKeyBase64)
+    {
         using var rsa = RSA.Create();
         rsa.ImportPkcs8PrivateKey(Convert.FromBase64String(privateKeyBase64), out _);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
@@ -37,13 +42,17 @@ public static class CryptoHelper
     /// </summary>
     public static bool VerifyMetadata(Models.PodcastMetadata metadata, string publicKeyBase64)
     {
+        return VerifyPayload(GetSignablePayload(metadata), metadata.Signature, publicKeyBase64);
+    }
+
+    public static bool VerifyPayload(string payload, string signatureBase64, string publicKeyBase64)
+    {
         try
         {
-            var payload = GetSignablePayload(metadata);
             using var rsa = RSA.Create();
             rsa.ImportSubjectPublicKeyInfo(Convert.FromBase64String(publicKeyBase64), out _);
             var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
-            var signature = Convert.FromBase64String(metadata.Signature);
+            var signature = Convert.FromBase64String(signatureBase64);
             return rsa.VerifyHash(hash, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         }
         catch
@@ -74,7 +83,8 @@ public static class CryptoHelper
             m.FileHash,
             m.FileSize,
             m.DurationSeconds,
-            m.PublishTimestamp
+            m.PublishTimestamp,
+            m.IsDeleted
         };
         return JsonSerializer.Serialize(payload);
     }

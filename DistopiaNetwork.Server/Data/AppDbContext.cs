@@ -38,6 +38,9 @@ public class AppDbContext : DbContext
             // Indice su PublisherServer: usato da StreamingService per trovare il peer corretto
             e.HasIndex(p => p.PublisherServer)
              .HasDatabaseName("IX_Podcasts_PublisherServer");
+
+            e.HasIndex(p => p.IsDeleted)
+             .HasDatabaseName("IX_Podcasts_IsDeleted");
         });
 
         // ── CacheEntries ──────────────────────────────────────────────────────

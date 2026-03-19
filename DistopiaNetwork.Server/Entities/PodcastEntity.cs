@@ -41,6 +41,8 @@ public class PodcastEntity
 
     public long PublishTimestamp { get; set; }         // Unix timestamp UTC
 
+    public bool IsDeleted { get; set; }
+
     [Required]
     public string Signature { get; set; } = default!;  // Base64 RSA signature (nvarchar MAX)
 

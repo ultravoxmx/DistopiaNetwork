@@ -32,6 +32,7 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<CatalogService>();
 builder.Services.AddScoped<CacheService>();
 builder.Services.AddScoped<StreamingService>();
+builder.Services.AddSingleton<SignedRequestVerifier>();
 
 // ── WebSocket: gestore connessioni publisher (Singleton: vive per tutto il processo) ──
 // PublisherConnectionManager è Singleton perché mantiene il dizionario delle connessioni
@@ -64,7 +65,7 @@ using (var scope = app.Services.CreateScope())
     try
     {
         logger.LogInformation("Applying database migrations...");
-        await db.Database.EnsureCreatedAsync();
+        await db.Database.MigrateAsync();
         logger.LogInformation("Database ready.");
     }
     catch (Exception ex)

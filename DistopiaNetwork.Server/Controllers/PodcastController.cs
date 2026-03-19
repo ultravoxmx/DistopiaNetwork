@@ -11,11 +11,13 @@ public class PodcastController(
     CatalogService catalog,
     CacheService cache,
     StreamingService streaming,
+    SignedRequestVerifier verifier,
     ILogger<PodcastController> logger) : ControllerBase
 {
     private readonly CatalogService _catalog = catalog;
     private readonly CacheService _cache = cache;
     private readonly StreamingService _streaming = streaming;
+    private readonly SignedRequestVerifier _verifier = verifier;
     private readonly ILogger<PodcastController> _logger = logger;
 
     // ── GET /podcasts ─────────────────────────────────────────────────────────
@@ -116,6 +118,114 @@ public class PodcastController(
         _logger.LogInformation("MP3 stored for podcast {Id}", id);
 
         return Ok("Upload successful.");
+    }
+
+    [HttpPut("podcast/{id}/metadata")]
+    public async Task<IActionResult> UpdateMetadata(string id, [FromBody] UpdateMetadataRequest request)
+    {
+        if (!id.Equals(request.PodcastId, StringComparison.Ordinal))
+            return BadRequest(new OperationResponse { Success = false, Error = "Path/body podcast id mismatch." });
+
+        var existing = await _catalog.GetRawAsync(id);
+        if (existing is null)
+            return NotFound(new OperationResponse { Success = false, Error = "Podcast not found." });
+
+        if (!existing.PublisherPubKey.Equals(request.PublisherPubKey, StringComparison.Ordinal))
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new OperationResponse { Success = false, Error = "Only podcast owner can update metadata." });
+
+        var payload = SignedRequestVerifier.BuildUpdatePayload(
+            request.PodcastId,
+            request.PublisherPubKey,
+            request.TimestampUnix,
+            request.Nonce,
+            request.Title,
+            request.Description,
+            request.ImageUrl);
+
+        if (!_verifier.Verify(request.PublisherPubKey, request.TimestampUnix, request.Nonce, payload, request.Signature))
+            return Unauthorized(new OperationResponse { Success = false, Error = "Invalid signature or replayed request." });
+
+        var updated = new PodcastMetadata
+        {
+            PodcastId = existing.PodcastId,
+            PublisherPubKey = existing.PublisherPubKey,
+            PublisherServer = existing.PublisherServer,
+            FileHash = existing.FileHash,
+            FileSize = existing.FileSize,
+            DurationSeconds = existing.DurationSeconds,
+            Title = request.Title,
+            Description = request.Description,
+            ImageUrl = request.ImageUrl,
+            PublishTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            IsDeleted = false,
+            Signature = request.MetadataSignature
+        };
+
+        var ok = await _catalog.TryAddOrUpdateAsync(updated);
+        if (!ok)
+            return BadRequest(new OperationResponse { Success = false, Error = "Invalid metadata signature." });
+
+        return Ok(new OperationResponse
+        {
+            Success = true,
+            ServerTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        });
+    }
+
+    [HttpDelete("podcast/{id}")]
+    public async Task<IActionResult> DeletePodcast(string id, [FromBody] DeletePodcastRequest request)
+    {
+        if (!id.Equals(request.PodcastId, StringComparison.Ordinal))
+            return BadRequest(new OperationResponse { Success = false, Error = "Path/body podcast id mismatch." });
+
+        var existing = await _catalog.GetRawAsync(id);
+        if (existing is null)
+            return NotFound(new OperationResponse { Success = false, Error = "Podcast not found." });
+
+        if (!existing.PublisherPubKey.Equals(request.PublisherPubKey, StringComparison.Ordinal))
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new OperationResponse { Success = false, Error = "Only podcast owner can delete." });
+
+        var payload = SignedRequestVerifier.BuildDeletePayload(
+            request.PodcastId,
+            request.PublisherPubKey,
+            request.TimestampUnix,
+            request.Nonce,
+            request.Reason);
+
+        if (!_verifier.Verify(request.PublisherPubKey, request.TimestampUnix, request.Nonce, payload, request.Signature))
+            return Unauthorized(new OperationResponse { Success = false, Error = "Invalid signature or replayed request." });
+
+        var tombstone = new PodcastMetadata
+        {
+            PodcastId = existing.PodcastId,
+            PublisherPubKey = existing.PublisherPubKey,
+            PublisherServer = existing.PublisherServer,
+            FileHash = existing.FileHash,
+            FileSize = existing.FileSize,
+            DurationSeconds = existing.DurationSeconds,
+            Title = existing.Title,
+            Description = existing.Description,
+            ImageUrl = existing.ImageUrl,
+            PublishTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            IsDeleted = true,
+            Signature = request.MetadataSignature
+        };
+
+        var ok = await _catalog.TryAddOrUpdateAsync(tombstone);
+        if (!ok)
+            return BadRequest(new OperationResponse { Success = false, Error = "Invalid metadata signature." });
+
+        var purged = await _cache.PurgeByHashAsync(existing.FileHash);
+        if (purged)
+            _logger.LogInformation("Purged cache for deleted podcast {PodcastId} ({FileHash})", existing.PodcastId, existing.FileHash);
+
+        return Ok(new OperationResponse
+        {
+            Success = true,
+            ServerTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        });
     }
 
     // ── GET /podcast/{id}/stream ──────────────────────────────────────────────
