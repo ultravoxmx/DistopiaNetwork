@@ -6,25 +6,27 @@ namespace DistopiaNetwork.WindowsClient.UI.Forms;
 public class MainExplorerForm : Form
 {
     private readonly CatalogService _catalog;
+    private readonly PublishService _publishService;
     private readonly MetadataEditService _editService;
     private readonly DeleteService _deleteService;
 
-    private readonly TreeView _tree = new() { Dock = DockStyle.Fill };
     private readonly DataGridView _grid = new() { Dock = DockStyle.Fill, ReadOnly = true, AutoGenerateColumns = false };
     private readonly PropertyGrid _details = new() { Dock = DockStyle.Fill };
     private readonly Button _btnRefresh = new() { Text = "Refresh" };
+    private readonly Button _btnUpload = new() { Text = "Upload New" };
     private readonly Button _btnEdit = new() { Text = "Edit Metadata" };
     private readonly Button _btnDelete = new() { Text = "Delete" };
 
     private List<PodcastItemView> _currentItems = [];
 
-    public MainExplorerForm(CatalogService catalog, MetadataEditService editService, DeleteService deleteService)
+    public MainExplorerForm(CatalogService catalog, PublishService publishService, MetadataEditService editService, DeleteService deleteService)
     {
         _catalog = catalog;
+        _publishService = publishService;
         _editService = editService;
         _deleteService = deleteService;
 
-        Text = "Distopia Network Explorer";
+        Text = "Distopia Publisher Windows Client — My Podcasts";
         Width = 1400;
         Height = 820;
 
@@ -35,38 +37,30 @@ public class MainExplorerForm : Form
 
     private void BuildUi()
     {
-        var main = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 260 };
-        var right = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 800 };
-
-        _tree.Nodes.Add("Catalog", "Catalog");
-        _tree.Nodes[0]!.Nodes.Add("All", "All Podcasts");
-        _tree.Nodes[0]!.Nodes.Add("Mine", "My Podcasts");
-        _tree.ExpandAll();
-        _tree.AfterSelect += (_, _) => ApplyFilter();
+        var main = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 940 };
 
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _grid.MultiSelect = false;
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.Title), HeaderText = "Title", Width = 270 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.PublisherServer), HeaderText = "Server", Width = 120 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.PublisherPubKeyShort), HeaderText = "Creator", Width = 180 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.PublishTimestamp), HeaderText = "Timestamp", Width = 140 });
-        _grid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = nameof(PodcastItemView.IsOwner), HeaderText = "Owner", Width = 70 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.DurationSeconds), HeaderText = "Duration (s)", Width = 110 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = nameof(PodcastItemView.FileHash), HeaderText = "File hash", Width = 240 });
         _grid.SelectionChanged += (_, _) => UpdateDetails();
 
         var toolPanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true };
         _btnRefresh.Click += async (_, _) => await RefreshCatalogAsync();
+        _btnUpload.Click += async (_, _) => await UploadNewAsync();
         _btnEdit.Click += async (_, _) => await EditSelectedAsync();
         _btnDelete.Click += async (_, _) => await DeleteSelectedAsync();
-        toolPanel.Controls.AddRange([_btnRefresh, _btnEdit, _btnDelete]);
+        toolPanel.Controls.AddRange([_btnRefresh, _btnUpload, _btnEdit, _btnDelete]);
 
         var gridPanel = new Panel { Dock = DockStyle.Fill };
         gridPanel.Controls.Add(_grid);
         gridPanel.Controls.Add(toolPanel);
 
-        main.Panel1.Controls.Add(_tree);
-        main.Panel2.Controls.Add(right);
-        right.Panel1.Controls.Add(gridPanel);
-        right.Panel2.Controls.Add(_details);
+        main.Panel1.Controls.Add(gridPanel);
+        main.Panel2.Controls.Add(_details);
 
         Controls.Add(main);
     }
@@ -76,24 +70,13 @@ public class MainExplorerForm : Form
         try
         {
             _currentItems = await _catalog.LoadAsync();
-            ApplyFilter();
+            _grid.DataSource = _currentItems;
+            UpdateDetails();
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Failed to load catalog: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-    }
-
-    private void ApplyFilter()
-    {
-        var mode = _tree.SelectedNode?.Name;
-        IEnumerable<PodcastItemView> filtered = _currentItems;
-
-        if (mode == "Mine")
-            filtered = _currentItems.Where(x => x.IsOwner);
-
-        _grid.DataSource = filtered.ToList();
-        UpdateDetails();
     }
 
     private PodcastItemView? Selected()
@@ -104,9 +87,45 @@ public class MainExplorerForm : Form
         var selected = Selected();
         _details.SelectedObject = selected;
 
-        var owner = selected?.IsOwner == true;
-        _btnEdit.Enabled = owner;
-        _btnDelete.Enabled = owner;
+        var hasSelection = selected is not null;
+        _btnEdit.Enabled = hasSelection;
+        _btnDelete.Enabled = hasSelection;
+    }
+
+    private async Task UploadNewAsync()
+    {
+        using var ofd = new OpenFileDialog
+        {
+            Title = "Select MP3",
+            Filter = "MP3 files (*.mp3)|*.mp3|All files (*.*)|*.*",
+            Multiselect = false
+        };
+
+        if (ofd.ShowDialog() != DialogResult.OK)
+            return;
+
+        var title = Prompt("Titolo episodio", Path.GetFileNameWithoutExtension(ofd.FileName));
+        if (string.IsNullOrWhiteSpace(title)) return;
+
+        var description = Prompt("Descrizione", string.Empty) ?? string.Empty;
+        var durationText = Prompt("Durata in secondi", "0") ?? "0";
+        _ = int.TryParse(durationText, out var durationSeconds);
+        var imageUrl = Prompt("Image URL (optional)", string.Empty);
+
+        var result = await _publishService.PublishAsync(
+            ofd.FileName,
+            title,
+            description,
+            durationSeconds,
+            string.IsNullOrWhiteSpace(imageUrl) ? null : imageUrl);
+
+        if (!result.Success)
+        {
+            MessageBox.Show(result.Error ?? "Publish failed.", "Upload", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        await RefreshCatalogAsync();
     }
 
     private async Task EditSelectedAsync()

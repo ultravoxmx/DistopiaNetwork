@@ -23,6 +23,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<PodcastApiClient>();
 
         services.AddSingleton<CatalogService>();
+        services.AddSingleton<PublishService>();
         services.AddSingleton<MetadataEditService>();
         services.AddSingleton<DeleteService>();
 

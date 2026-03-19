@@ -19,23 +19,24 @@ public class CatalogService
     public async Task<List<PodcastItemView>> LoadAsync(CancellationToken ct = default)
     {
         var catalog = await _api.GetCatalogAsync(ct);
-        return catalog.Select(ToView).OrderByDescending(p => p.PublishTimestamp).ToList();
+        return catalog
+            .Where(p => string.Equals(p.PublisherPubKey, _keys.PublicKey, StringComparison.Ordinal))
+            .Select(ToView)
+            .OrderByDescending(p => p.PublishTimestamp)
+            .ToList();
     }
 
     private PodcastItemView ToView(PodcastMetadata p)
     {
-        var keyShort = p.PublisherPubKey.Length > 16 ? p.PublisherPubKey[..16] + "..." : p.PublisherPubKey;
         return new PodcastItemView
         {
             PodcastId = p.PodcastId,
             Title = p.Title,
             PublisherServer = p.PublisherServer,
-            PublisherPubKeyShort = keyShort,
             PublishTimestamp = p.PublishTimestamp,
             DurationSeconds = p.DurationSeconds,
             FileSize = p.FileSize,
-            FileHash = p.FileHash,
-            IsOwner = string.Equals(p.PublisherPubKey, _keys.PublicKey, StringComparison.Ordinal)
+            FileHash = p.FileHash
         };
     }
 }

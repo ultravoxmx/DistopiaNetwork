@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using DistopiaNetwork.Shared.Crypto;
 using DistopiaNetwork.Shared.Dto;
 using DistopiaNetwork.Shared.Models;
 using DistopiaNetwork.WindowsClient.Configuration;
@@ -110,6 +111,63 @@ public class PodcastApiClient
 
         var response = await http.SendAsync(msg, ct);
         return await ReadOperationResponseAsync(response, ct);
+    }
+
+    public async Task<OperationResponse> PublishAsync(
+        string filePath,
+        string title,
+        string description,
+        int durationSeconds,
+        string? imageUrl,
+        CancellationToken ct = default)
+    {
+        if (!File.Exists(filePath))
+            return new OperationResponse { Success = false, Error = $"File not found: {filePath}" };
+
+        var data = await File.ReadAllBytesAsync(filePath, ct);
+        var metadata = new PodcastMetadata
+        {
+            PodcastId = Guid.NewGuid().ToString(),
+            PublisherPubKey = _keys.PublicKey,
+            PublisherServer = _settings.ServerId,
+            Title = title,
+            Description = description,
+            ImageUrl = imageUrl,
+            FileHash = CryptoHelper.ComputeFileHash(data),
+            FileSize = data.Length,
+            DurationSeconds = durationSeconds,
+            PublishTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            IsDeleted = false
+        };
+
+        metadata.Signature = _signer.SignMetadata(metadata);
+
+        var http = _httpFactory.CreateClient();
+        var publishResponse = await http.PostAsJsonAsync($"{_settings.ServerUrl}/podcast/publish", metadata, ct);
+
+        if (!publishResponse.IsSuccessStatusCode)
+        {
+            var err = await publishResponse.Content.ReadAsStringAsync(ct);
+            return new OperationResponse { Success = false, Error = $"Publish failed: HTTP {(int)publishResponse.StatusCode} {err}" };
+        }
+
+        var result = await publishResponse.Content.ReadFromJsonAsync<PublishResponse>(cancellationToken: ct);
+        var uploadPath = result?.UploadUrl ?? $"/podcast/{metadata.PodcastId}/upload";
+
+        using var content = new ByteArrayContent(data);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/mpeg");
+        var upload = await http.PostAsync($"{_settings.ServerUrl}{uploadPath}", content, ct);
+        if (!upload.IsSuccessStatusCode)
+        {
+            var err = await upload.Content.ReadAsStringAsync(ct);
+            return new OperationResponse { Success = false, Error = $"Upload failed: HTTP {(int)upload.StatusCode} {err}" };
+        }
+
+        return new OperationResponse
+        {
+            Success = true,
+            ServerTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        };
     }
 
     private async Task<PodcastMetadata?> GetPodcastByIdAsync(string id, CancellationToken ct)
