@@ -139,6 +139,21 @@ public class CacheService
     public async Task<int> CountActiveAsync()
         => await _uow.CacheEntries.CountActiveAsync();
 
+    /// <summary>
+    /// Rimuove immediatamente un file dalla cache (filesystem + DB) dato il suo hash.
+    /// Ritorna true se era presente almeno un'entry da rimuovere.
+    /// </summary>
+    public async Task<bool> PurgeByHashAsync(string fileHash, CancellationToken ct = default)
+    {
+        var entry = await _uow.CacheEntries.GetByHashAsync(fileHash);
+        if (entry is null)
+            return false;
+
+        await RemoveAsync(entry);
+        await _uow.SaveChangesAsync(ct);
+        return true;
+    }
+
     // ── Helpers privati ───────────────────────────────────────────────────────
 
     private async Task<CacheEntryEntity> RegisterEntryAsync(string fileHash, string filePath, string? podcastId)

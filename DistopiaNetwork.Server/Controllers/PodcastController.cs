@@ -217,6 +217,10 @@ public class PodcastController(
         if (!ok)
             return BadRequest(new OperationResponse { Success = false, Error = "Invalid metadata signature." });
 
+        var purged = await _cache.PurgeByHashAsync(existing.FileHash);
+        if (purged)
+            _logger.LogInformation("Purged cache for deleted podcast {PodcastId} ({FileHash})", existing.PodcastId, existing.FileHash);
+
         return Ok(new OperationResponse
         {
             Success = true,
